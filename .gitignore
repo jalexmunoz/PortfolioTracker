@@ -1,0 +1,73 @@
+# Database
+portfolio.db
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Legacy
+legacy/
+backup/
+*.bak
+# venv / caches
+.venv/
+__pycache__/
+.pytest_cache/
+
+# secrets
+.env
+*.key
+*.pem
+
+# sqlite / local state
+*.db
+portfolio.db
+
+# OS
+.DS_Store
+Thumbs.db
