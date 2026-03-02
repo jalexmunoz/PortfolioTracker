@@ -345,19 +345,19 @@ def test_positions_cost_basis_and_avg(services):
     # BUY 5 @ $2 + $1 fee
     tx_svc.record_buy(symbol='XRP', account='Main', qty=Decimal('5'), unit_price=Decimal('2'), fee_usd=Decimal('1'), tx_date='2020-01-02')
 
-    # SELL 8 (should match 10 migration then  -2 from BUY)
-    tx_svc.record_sell(symbol='XRP', account='Main', qty=Decimal('8'), unit_price=Decimal('3'), fee_usd=Decimal('2'), tx_date='2020-01-03')
+    # SELL 11 (FIFO: matches 10 from MIGRATION, 1 from BUY -> remaining M:0, B:4)
+    tx_svc.record_sell(symbol='XRP', account='Main', qty=Decimal('11'), unit_price=Decimal('3'), fee_usd=Decimal('2'), tx_date='2020-01-03')
 
     positions = pnl_svc.positions(account='Main')
     # find XRP position
     xrp = [p for p in positions if p['symbol'] == 'XRP'][0]
-    # qty_open = (10 + 5) - 8 = 7
-    assert xrp['qty_open'] == Decimal('7')
-    # cost basis should be remaining from buys: migration had 10, 5 matched -> remaining 2 @1 = 2
-    # and BUY had 5, 3 matched -> remaining 2 @2 + remaining buy fee allocation
-    # buy fee =1, matched allocation = 1*(3/5)=0.6, remaining fee =0.4
-    # cost_basis = 2*1 + (2*2 + 0.4) = 2 + 4 + 0.4 = 6.4
-    assert abs(xrp['cost_basis'] - Decimal('6.4')) < Decimal('0.0001')
+    # qty_open = (10 + 5) - 11 = 4
+    assert xrp['qty_open'] == Decimal('4')
+    # cost basis should be remaining from buys:
+    # MIGRATION: matched 10, remaining=0, cost = 0
+    # BUY: matched 1, remaining=4, cost = 4*2 + 1*(4/5) = 8 + 0.8 = 8.8
+    # total cost_basis = 8.8
+    assert abs(xrp['cost_basis'] - Decimal('8.8')) < Decimal('0.0001')
     assert xrp['avg_cost'] == xrp['cost_basis'] / xrp['qty_open']
 
 
