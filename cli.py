@@ -147,15 +147,26 @@ def cli_positions(symbol, account):
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = PnLService(db, resolver)
+    # use positions() to gather richer data
     rows = []
-    if symbol:
-        qty = svc.open_position_qty(symbol, account)
-        rows.append((symbol, account or "(all)", qty))
-    else:
-        for sym in load_symbols(db):
-            qty = svc.open_position_qty(sym, account)
-            rows.append((sym, account or "(all)", qty))
-    display_table(["Symbol", "Account", "Qty"], rows)
+    for p in svc.positions(account):
+        if symbol and p['symbol'] != symbol:
+            continue
+        rows.append((p['symbol'], p['account'] or '(all)', str(p['qty_open']), str(p['avg_cost']), str(p['cost_basis'])))
+    display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis"], rows)
+
+
+@main.command("summary")
+@click.option("--account", default=None)
+def cli_summary(account):
+    """Show portfolio summary (cost basis, realized PnL, cash)."""
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = PnLService(db, resolver)
+    s = svc.summary(account)
+    click.echo(f"Total cost basis: {s['total_cost_basis']}")
+    click.echo(f"Total realized PnL: {s['total_realized_pnl']}")
+    click.echo(f"Cash balance: {s['cash_balance']}")
 
 
 @main.command("pnl")
