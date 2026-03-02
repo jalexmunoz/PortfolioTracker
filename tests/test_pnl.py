@@ -319,3 +319,73 @@ def test_realized_pnl_by_account(services):
     # Account2: (55000 - 2) - (50000 + 5) = 4993
     assert pnl1 == Decimal('19987')
     assert pnl2 == Decimal('4993')
+
+
+def test_positions_cost_basis_and_avg(services):
+    """Test positions() returns qty_open, cost_basis and avg_cost correctly."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('XRP')
+    acct_id = tx_svc._get_or_create_account('Main', cursor)
+    conn.commit()
+
+    # MIGRATION_BUY 10 @ $1
+    cursor.execute('BEGIN')
+    cursor.execute(
+        """
+        INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (asset['id'], acct_id, 'MIGRATION_BUY', 10.0, 1.0, 0.0, 10.0, '2020-01-01')
+    )
+    conn.commit()
+
+    # BUY 5 @ $2 + $1 fee
+    tx_svc.record_buy(symbol='XRP', account='Main', qty=Decimal('5'), unit_price=Decimal('2'), fee_usd=Decimal('1'), tx_date='2020-01-02')
+
+    # SELL 8 (should match 10 migration then  -2 from BUY)
+    tx_svc.record_sell(symbol='XRP', account='Main', qty=Decimal('8'), unit_price=Decimal('3'), fee_usd=Decimal('2'), tx_date='2020-01-03')
+
+    positions = pnl_svc.positions(account='Main')
+    # find XRP position
+    xrp = [p for p in positions if p['symbol'] == 'XRP'][0]
+    # qty_open = (10 + 5) - 8 = 7
+    assert xrp['qty_open'] == Decimal('7')
+    # cost basis should be remaining from buys: migration had 10, 5 matched -> remaining 2 @1 = 2
+    # and BUY had 5, 3 matched -> remaining 2 @2 + remaining buy fee allocation
+    # buy fee =1, matched allocation = 1*(3/5)=0.6, remaining fee =0.4
+    # cost_basis = 2*1 + (2*2 + 0.4) = 2 + 4 + 0.4 = 6.4
+    assert abs(xrp['cost_basis'] - Decimal('6.4')) < Decimal('0.0001')
+    assert xrp['avg_cost'] == xrp['cost_basis'] / xrp['qty_open']
+
+
+def test_cash_balance_and_summary(services):
+    """Test cash balance using __USD_CASH__ and overall summary."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    usd = resolver.get_or_create_usd_cash()
+    acct_id = tx_svc._get_or_create_account('Main', cursor)
+    conn.commit()
+
+    # DEPOSIT -> increase cash (simulate by inserting a transaction on USD_CASH)
+    cursor.execute('BEGIN')
+    cursor.execute(
+        "INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (usd['id'], acct_id, 'DEPOSIT', 1.0, 1.0, 0.0, 1000.0, '2020-01-01')
+    )
+    # FEE -> reduce cash
+    cursor.execute(
+        "INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (usd['id'], acct_id, 'FEE', 1.0, 1.0, 0.0, -10.0, '2020-01-02')
+    )
+    conn.commit()
+
+    cash = pnl_svc.cash_balance(account='Main')
+    assert cash == Decimal('990')
+
+    summary = pnl_svc.summary(account='Main')
+    assert summary['cash_balance'] == Decimal('990')
