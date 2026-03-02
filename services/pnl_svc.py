@@ -178,16 +178,12 @@ class PnLService:
             # compute cost_basis from remaining (unmatched) portions of buy transactions
             asset = self.resolver.resolve(sym)
             if acct:
-                acct_id_sub = acct
                 cursor.execute(
                     """
                     SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
-                           COALESCE(SUM(lm.quantity), 0) as matched_qty,
-                           COALESCE(SUM(lm.buy_fee_alloc), 0) as matched_buy_fee
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
                     FROM transactions t
-                    LEFT JOIN lot_matches lm ON lm.buy_tx_id = t.id
                     WHERE t.asset_id = ? AND t.account_id = (SELECT id FROM accounts WHERE name = ?) AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
-                    GROUP BY t.id
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
                     (asset['id'], acct)
@@ -196,12 +192,9 @@ class PnLService:
                 cursor.execute(
                     """
                     SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
-                           COALESCE(SUM(lm.quantity), 0) as matched_qty,
-                           COALESCE(SUM(lm.buy_fee_alloc), 0) as matched_buy_fee
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
                     FROM transactions t
-                    LEFT JOIN lot_matches lm ON lm.buy_tx_id = t.id
                     WHERE t.asset_id = ? AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
-                    GROUP BY t.id
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
                     (asset['id'],)
@@ -214,12 +207,11 @@ class PnLService:
                 unit_price = Decimal(str(row[2])) if row[2] is not None else Decimal('0')
                 buy_fee = Decimal(str(row[3])) if row[3] is not None else Decimal('0')
                 matched_qty = Decimal(str(row[4]))
-                matched_buy_fee = Decimal(str(row[5]))
 
                 remaining_qty = buy_qty - matched_qty
                 if remaining_qty <= 0:
                     continue
-                remaining_fee = buy_fee - matched_buy_fee
+                remaining_fee = buy_fee * (remaining_qty / buy_qty) if buy_qty > 0 else Decimal('0')
                 cost_basis += remaining_qty * unit_price + remaining_fee
                 total_open_qty += remaining_qty
 
