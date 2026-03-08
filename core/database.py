@@ -140,6 +140,8 @@ class Database:
             symbol TEXT UNIQUE NOT NULL,
             asset_type TEXT NOT NULL,
             current_price REAL,
+            price_source TEXT,
+            price_updated_at TIMESTAMP,
             tradingview_symbol TEXT,
             exchange TEXT,
             currency TEXT DEFAULT 'USD',

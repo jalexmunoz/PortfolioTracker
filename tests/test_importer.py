@@ -111,3 +111,25 @@ ETH,2,200,Main"""
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM transactions WHERE tx_type='MIGRATION_BUY'")
     assert cursor.fetchone()[0] == 2
+
+
+def test_import_sets_price_metadata(tmp_path):
+    csv_content = """Symbol,Quantity,Total Cost (USD),Price (USD),Wallet
+BTC,1,100,150,Main"""
+    csv_file = tmp_path / "price.csv"
+    csv_file.write_text(csv_content)
+    
+    db = setup_test_db(tmp_path)
+    resolver = AssetResolver(db)
+    importer = CSVImporter(db, resolver, str(csv_file))
+
+    importer.execute()
+    
+    # check price metadata
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source, price_updated_at FROM assets WHERE symbol = 'BTC'")
+    row = cursor.fetchone()
+    assert row[0] == 150.0
+    assert row[1] == 'csv_bootstrap'
+    assert row[2] == '2000-01-01'

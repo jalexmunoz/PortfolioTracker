@@ -402,7 +402,7 @@ def test_positions_unrealized_gain_alerts(services):
     tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
     # Set current_price to $100
     btc_asset = resolver.resolve('BTC')
-    cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (100.0, btc_asset['id']))
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (100.0, '2020-01-01', btc_asset['id']))
     conn.commit()
 
     positions = pnl_svc.positions(account='Main')
@@ -412,7 +412,7 @@ def test_positions_unrealized_gain_alerts(services):
     assert btc['alert'] == ""  # 0% < 30%
 
     # Update current_price to $200
-    cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (200.0, btc_asset['id']))
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (200.0, '2020-01-02', btc_asset['id']))
     conn.commit()
 
     positions = pnl_svc.positions(account='Main')
@@ -428,7 +428,7 @@ def test_positions_unrealized_gain_alerts(services):
     # Test >30% for ETH
     tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
     eth_asset = resolver.resolve('ETH')
-    cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (160.0, eth_asset['id']))
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (160.0, '2020-01-01', eth_asset['id']))
     conn.commit()
 
     positions = pnl_svc.positions(account='Main')
@@ -443,7 +443,7 @@ def test_positions_unrealized_gain_alerts(services):
     # Test <30% for ADA
     tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
     ada_asset = resolver.resolve('ADA')
-    cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (125.0, ada_asset['id']))
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (125.0, '2020-01-01', ada_asset['id']))
     conn.commit()
 
     positions = pnl_svc.positions(account='Main')

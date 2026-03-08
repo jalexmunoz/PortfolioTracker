@@ -117,7 +117,7 @@ class CSVImporter:
                         price_raw = row[price_idx].strip()
                         price = self._clean_number(price_raw)
                         if price is not None:
-                            cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (float(price), asset['id']))
+                            cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (float(price), 'csv_bootstrap', '2000-01-01', asset['id']))
 
                     quantity = Decimal(str(qty))
                     cost_dec = Decimal(str(cost))

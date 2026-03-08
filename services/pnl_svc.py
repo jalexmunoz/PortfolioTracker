@@ -219,13 +219,14 @@ class PnLService:
             realized = self.realized_pnl(sym, acct)
 
             # get current_price from assets
-            cursor.execute("SELECT current_price FROM assets WHERE id = ?", (asset['id'],))
+            cursor.execute("SELECT current_price, price_updated_at FROM assets WHERE id = ?", (asset['id'],))
             row = cursor.fetchone()
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
+            price_updated_at = row[1] if row else None
 
             # calculate unrealized gain %
             alert = ""
-            if current_price and cost_basis > 0 and qty_open > 0:
+            if current_price and price_updated_at and cost_basis > 0 and qty_open > 0:
                 market_value = qty_open * current_price
                 unrealized_pnl = market_value - cost_basis
                 unrealized_pct = (unrealized_pnl / cost_basis) * 100
