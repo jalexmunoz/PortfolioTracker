@@ -72,3 +72,19 @@ def test_summary_and_positions_empty_db(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "No portfolio data found" in result.output
     assert "import-csv" in result.output
+
+
+def test_refresh_prices(tmp_path, monkeypatch):
+    # set DB path to temporary file
+    db_file = tmp_path / "test.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    # init-db
+    result = runner.invoke(main, ["init-db"], env=env)
+    assert result.exit_code == 0
+
+    # refresh-prices
+    result = runner.invoke(main, ["refresh-prices"], env=env)
+    assert result.exit_code == 0
+    assert "Prices refreshed:" in result.output

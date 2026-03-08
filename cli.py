@@ -11,6 +11,7 @@ from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 from portfolio_tracker_v2.migration.csv_importer import CSVImporter
 from portfolio_tracker_v2.services.transaction_svc import TransactionService
 from portfolio_tracker_v2.services.pnl_svc import PnLService
+from portfolio_tracker_v2.services.price_svc import refresh_prices
 from portfolio_tracker_v2.scripts import init_db as init_db_script
 
 
@@ -208,3 +209,11 @@ def cli_pnl(symbol, account):
             pnl_val = svc.realized_pnl(sym, account)
             rows.append((sym, account or "(all)", pnl_val))
     display_table(["Symbol", "Account", "Realized PnL"], rows)
+
+
+@main.command("refresh-prices")
+def cli_refresh_prices():
+    """Refresh current prices for active assets from external sources."""
+    db = ensure_db()
+    updated, skipped = refresh_prices(db)
+    click.echo(f"Prices refreshed: {updated} updated, {skipped} skipped")
