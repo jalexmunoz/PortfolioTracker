@@ -1,9 +1,9 @@
 """
 CSV importer for migration into SQLite.
 """
-from dataclasses import dataclass
-from decimal import Decimal
-from typing import Optional
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from typing import Optional, List, Set
 import csv
 
 from portfolio_tracker_v2.core import Database
@@ -14,9 +14,13 @@ from portfolio_tracker_v2.migration.validator import validate_csv, ValidationRep
 
 @dataclass
 class ImportReport:
-    row_count: int
+    total_rows: int
+    valid_row_count: int
     transactions_added: int
     total_cost_sum: Decimal
+    warnings: List[str] = field(default_factory=list)
+    unique_symbols: Set[str] = field(default_factory=set)
+    unique_accounts: Set[str] = field(default_factory=set)
 
 
 class CSVImporter:
@@ -27,6 +31,18 @@ class CSVImporter:
         # validator is a callable taking path and returning ValidationReport
         self.validator = validator
 
+    def _clean_number(self, value: str):
+        if value is None:
+            return None
+        try:
+            # remove $ commas spaces
+            cleaned = value.replace('$', '').replace(',', '').strip()
+            if cleaned == '':
+                return None
+            return Decimal(cleaned)
+        except InvalidOperation:
+            return None
+
     def dry_run(self) -> ImportReport:
         """Validate and summarize without writing to DB."""
         report = self.validator(self.csv_path)
@@ -35,9 +51,13 @@ class CSVImporter:
 
         # row_count and total already computed
         return ImportReport(
-            row_count=report.row_count,
+            total_rows=report.total_rows,
+            valid_row_count=report.valid_row_count,
             transactions_added=0,
-            total_cost_sum=report.total_cost_sum
+            total_cost_sum=report.total_cost_sum,
+            warnings=report.warnings,
+            unique_symbols=report.unique_symbols,
+            unique_accounts=report.unique_accounts
         )
 
     def execute(self) -> ImportReport:
@@ -54,35 +74,68 @@ class CSVImporter:
 
         try:
             cursor.execute('BEGIN')
-            for row in self._row_generator():
-                asset = self.resolver.resolve(row['Symbol'])
-                account_id = self._get_or_create_account(row['Wallet'], cursor)
+            # replicate validation loop but insert valid rows
+            with open(self.csv_path, newline='', encoding='utf-8', errors='ignore') as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                header_norm = [h.strip().lower() for h in header]
+                required = ['symbol', 'quantity', 'total cost (usd)', 'wallet']
+                missing = [col for col in required if col not in header_norm]
+                if missing:
+                    raise CSVImportError(f"Missing required columns: {missing}")
+                idx = {name: header_norm.index(name) for name in required}
+                date_idx = header_norm.index('date') if 'date' in header_norm else None
 
-                quantity = Decimal(str(row['Quantity']))
-                cost = Decimal(str(row['Total Cost (USD)']))
-                unit_price = cost / quantity if quantity != 0 else Decimal('0')
+                for row_num, row in enumerate(reader, start=1):
+                    if len(row) < len(header):
+                        continue
 
-                cursor.execute(
-                    """
-                    INSERT INTO transactions
-                    (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, sort_order, notes)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        asset['id'],
-                        account_id,
-                        'MIGRATION_BUY',
-                        float(quantity),
-                        float(unit_price),
-                        0.0,
-                        float(cost),
-                        row.get('Date') or '2000-01-01',
-                        None,
-                        'imported_from_csv',
+                    symbol = row[idx['symbol']].strip()
+                    wallet = row[idx['wallet']].strip()
+                    qty_raw = row[idx['quantity']]
+                    cost_raw = row[idx['total cost (usd)']]
+
+                    if not symbol or not wallet:
+                        continue
+
+                    qty = self._clean_number(qty_raw)
+                    cost = self._clean_number(cost_raw)
+
+                    if qty == 0 and cost == 0:
+                        continue
+
+                    if qty is None or qty <= 0 or cost is None or cost <= 0:
+                        continue
+
+                    # insert
+                    asset = self.resolver.resolve(symbol)
+                    account_id = self._get_or_create_account(wallet, cursor)
+
+                    quantity = Decimal(str(qty))
+                    cost_dec = Decimal(str(cost))
+                    unit_price = cost_dec / quantity if quantity != 0 else Decimal('0')
+
+                    cursor.execute(
+                        """
+                        INSERT INTO transactions
+                        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, sort_order, notes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            asset['id'],
+                            account_id,
+                            'MIGRATION_BUY',
+                            float(quantity),
+                            float(unit_price),
+                            0.0,
+                            float(cost_dec),
+                            row[date_idx] if date_idx is not None and date_idx < len(row) and row[date_idx].strip() else '2000-01-01',
+                            None,
+                            'imported_from_csv',
+                        )
                     )
-                )
-                added += 1
-                total_cost += cost
+                    added += 1
+                    total_cost += cost_dec
 
             # reconciliation
             cursor.execute(
@@ -90,13 +143,13 @@ class CSVImporter:
             )
             cnt, sum_usd = cursor.fetchone()
             # allow tiny float discrepancy
-            if cnt != report.row_count:
-                raise CSVImportError(f"Row count mismatch after insert: {cnt} vs {report.row_count}")
+            if cnt != report.valid_row_count:
+                raise CSVImportError(f"Row count mismatch after insert: {cnt} vs {report.valid_row_count}")
             if abs(Decimal(str(sum_usd)) - report.total_cost_sum) > Decimal('0.01'):
                 raise CSVImportError(f"Total cost mismatch after insert: {sum_usd} vs {report.total_cost_sum}")
 
             conn.commit()
-            return ImportReport(row_count=report.row_count, transactions_added=added, total_cost_sum=total_cost)
+            return ImportReport(total_rows=report.total_rows, valid_row_count=report.valid_row_count, transactions_added=added, total_cost_sum=total_cost)
         except Exception:
             conn.rollback()
             raise

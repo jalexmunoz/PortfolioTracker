@@ -21,7 +21,8 @@ def test_validate_good_csv(tmp_path):
     # re-use sample via fixtures
     report = validate_csv(TEST_CSV)
     assert report.errors == []
-    assert report.row_count == 3
+    assert report.valid_row_count == 3
+    assert report.total_rows == 3
     assert report.total_cost_sum == Decimal('350.00')
 
 
@@ -32,7 +33,7 @@ def test_importer_dry_run(tmp_path):
 
     report = importer.dry_run()
     assert isinstance(report, ImportReport)
-    assert report.row_count == 3
+    assert report.valid_row_count == 3
     assert report.transactions_added == 0
     assert report.total_cost_sum == Decimal('350.00')
 
@@ -43,7 +44,7 @@ def test_importer_execute(tmp_path):
     importer = CSVImporter(db, resolver, TEST_CSV)
 
     report = importer.execute()
-    assert report.row_count == 3
+    assert report.valid_row_count == 3
     assert report.transactions_added == 3
     assert report.total_cost_sum == Decimal('350.00')
 
@@ -63,7 +64,7 @@ def test_importer_execute_reconciliation_failure(tmp_path):
     # simulate mismatch by providing a validator that returns wrong counts
     def fake_validate(path):
         report = validate_csv(path)
-        report.row_count = 2
+        report.valid_row_count = 2
         return report
 
     importer = CSVImporter(db, resolver, TEST_CSV, validator=fake_validate)
@@ -72,9 +73,41 @@ def test_importer_execute_reconciliation_failure(tmp_path):
         importer.execute()
 
 
-def test_validate_missing_column(tmp_path):
-    # csv lacking wallet column should fail
-    bad_csv = tmp_path / "bad.csv"
-    bad_csv.write_text("Symbol,Quantity,Total Cost (USD)\nBTC,1,100\n")
-    report = validate_csv(str(bad_csv))
-    assert report.errors
+def test_validate_csv_with_placeholder_row(tmp_path):
+    # csv with a placeholder row qty=0 cost=0
+    csv_content = """Symbol,Quantity,Total Cost (USD),Wallet
+BTC,1,100,Main
+USDT,0,0,Bingx
+ETH,2,200,Main"""
+    csv_file = tmp_path / "placeholder.csv"
+    csv_file.write_text(csv_content)
+    report = validate_csv(str(csv_file))
+    assert report.errors == []
+    assert report.warnings == ["Row 2: skipped placeholder row (qty=0, cost=0)"]
+    assert report.valid_row_count == 2
+    assert report.total_rows == 3
+    assert report.total_cost_sum == Decimal('300')
+
+
+def test_importer_with_placeholder_row(tmp_path):
+    csv_content = """Symbol,Quantity,Total Cost (USD),Wallet
+BTC,1,100,Main
+USDT,0,0,Bingx
+ETH,2,200,Main"""
+    csv_file = tmp_path / "placeholder.csv"
+    csv_file.write_text(csv_content)
+    
+    db = setup_test_db(tmp_path)
+    resolver = AssetResolver(db)
+    importer = CSVImporter(db, resolver, str(csv_file))
+
+    report = importer.execute()
+    assert report.valid_row_count == 2  # valid rows
+    assert report.transactions_added == 2
+    assert report.total_cost_sum == Decimal('300')
+
+    # verify only valid rows in DB
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE tx_type='MIGRATION_BUY'")
+    assert cursor.fetchone()[0] == 2

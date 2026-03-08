@@ -91,10 +91,15 @@ def cli_import_csv(input_path, execute):
     resolver = AssetResolver(db)
     importer = CSVImporter(db, resolver, input_path)
     report = importer.dry_run()
-    click.echo(f"Rows: {report.row_count}")
+    click.echo(f"Total rows: {report.total_rows}")
+    click.echo(f"Valid rows: {report.valid_row_count}")
     click.echo(f"Symbols: {', '.join(sorted(report.unique_symbols))}")
     click.echo(f"Accounts: {', '.join(sorted(report.unique_accounts))}")
     click.echo(f"Total cost: {report.total_cost_sum}")
+    if report.warnings:
+        click.echo("Warnings:")
+        for w in report.warnings:
+            click.echo(f"  {w}")
     if execute:
         click.confirm("Proceed with import?", abort=True)
         summary = importer.execute()
@@ -153,7 +158,10 @@ def cli_positions(symbol, account):
         if symbol and p['symbol'] != symbol:
             continue
         rows.append((p['symbol'], p['account'] or '(all)', str(p['qty_open']), str(p['avg_cost']), str(p['cost_basis'])))
-    display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis"], rows)
+    if rows:
+        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis"], rows)
+    else:
+        click.echo("No open positions found. Database may be empty. Run 'import-csv --execute' to import data.")
 
 
 @main.command("summary")
@@ -164,9 +172,12 @@ def cli_summary(account):
     resolver = AssetResolver(db)
     svc = PnLService(db, resolver)
     s = svc.summary(account)
-    click.echo(f"Total cost basis: {s['total_cost_basis']}")
-    click.echo(f"Total realized PnL: {s['total_realized_pnl']}")
-    click.echo(f"Cash balance: {s['cash_balance']}")
+    if s['total_cost_basis'] == 0 and s['total_realized_pnl'] == 0 and s['cash_balance'] == 0:
+        click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
+    else:
+        click.echo(f"Total cost basis: {s['total_cost_basis']}")
+        click.echo(f"Total realized PnL: {s['total_realized_pnl']}")
+        click.echo(f"Cash balance: {s['cash_balance']}")
 
 
 @main.command("pnl")
