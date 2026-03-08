@@ -11,6 +11,7 @@ from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 from portfolio_tracker_v2.migration.csv_importer import CSVImporter
 from portfolio_tracker_v2.services.transaction_svc import TransactionService
 from portfolio_tracker_v2.services.pnl_svc import PnLService
+from portfolio_tracker_v2.services.price_svc import refresh_prices
 from portfolio_tracker_v2.scripts import init_db as init_db_script
 
 
@@ -26,6 +27,17 @@ def parse_decimal(ctx, param, value):
         return Decimal(str(value))
     except (InvalidOperation, TypeError):
         raise click.BadParameter(f"{param} must be a number, got '{value}'")
+
+
+def format_money(value):
+    """Format decimal as currency: 1234.56 -> 1,234.56"""
+    return f"{value:,.2f}"
+
+
+def format_qty(value):
+    """Format quantity: trim trailing zeros, reasonable precision."""
+    s = f"{value:.8f}"
+    return s.rstrip('0').rstrip('.') if '.' in s else s
 
 
 def ensure_db():
@@ -91,10 +103,15 @@ def cli_import_csv(input_path, execute):
     resolver = AssetResolver(db)
     importer = CSVImporter(db, resolver, input_path)
     report = importer.dry_run()
-    click.echo(f"Rows: {report.row_count}")
+    click.echo(f"Total rows: {report.total_rows}")
+    click.echo(f"Valid rows: {report.valid_row_count}")
     click.echo(f"Symbols: {', '.join(sorted(report.unique_symbols))}")
     click.echo(f"Accounts: {', '.join(sorted(report.unique_accounts))}")
     click.echo(f"Total cost: {report.total_cost_sum}")
+    if report.warnings:
+        click.echo("Warnings:")
+        for w in report.warnings:
+            click.echo(f"  {w}")
     if execute:
         click.confirm("Proceed with import?", abort=True)
         summary = importer.execute()
@@ -147,15 +164,32 @@ def cli_positions(symbol, account):
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = PnLService(db, resolver)
+    # use positions() to gather richer data
     rows = []
-    if symbol:
-        qty = svc.open_position_qty(symbol, account)
-        rows.append((symbol, account or "(all)", qty))
+    for p in svc.positions(account):
+        if symbol and p['symbol'] != symbol:
+            continue
+        rows.append((p['symbol'], p['account'] or '(all)', format_qty(p['qty_open']), format_money(p['avg_cost']), format_money(p['cost_basis']), p['alert']))
+    if rows:
+        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis", "Alert"], rows)
     else:
-        for sym in load_symbols(db):
-            qty = svc.open_position_qty(sym, account)
-            rows.append((sym, account or "(all)", qty))
-    display_table(["Symbol", "Account", "Qty"], rows)
+        click.echo("No open positions found. Database may be empty. Run 'import-csv --execute' to import data.")
+
+
+@main.command("summary")
+@click.option("--account", default=None)
+def cli_summary(account):
+    """Show portfolio summary (cost basis, realized PnL, cash)."""
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = PnLService(db, resolver)
+    s = svc.summary(account)
+    if s['total_cost_basis'] == 0 and s['total_realized_pnl'] == 0 and s['cash_balance'] == 0:
+        click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
+    else:
+        click.echo(f"Total cost basis: {format_money(s['total_cost_basis'])}")
+        click.echo(f"Total realized PnL: {format_money(s['total_realized_pnl'])}")
+        click.echo(f"Cash balance: {format_money(s['cash_balance'])}")
 
 
 @main.command("pnl")
@@ -175,3 +209,11 @@ def cli_pnl(symbol, account):
             pnl_val = svc.realized_pnl(sym, account)
             rows.append((sym, account or "(all)", pnl_val))
     display_table(["Symbol", "Account", "Realized PnL"], rows)
+
+
+@main.command("refresh-prices")
+def cli_refresh_prices():
+    """Refresh current prices for active assets from external sources."""
+    db = ensure_db()
+    updated, skipped = refresh_prices(db)
+    click.echo(f"Prices refreshed: {updated} updated, {skipped} skipped")

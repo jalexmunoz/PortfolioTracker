@@ -132,3 +132,156 @@ class PnLService:
         result = cursor.fetchone()[0]
         
         return Decimal(str(result))
+
+    def positions(self, account: Optional[str] = None) -> list:
+        """
+        Return list of position dicts grouped by symbol (and account if account is None).
+
+        Each dict: { 'symbol', 'account', 'qty_open', 'cost_basis', 'avg_cost', 'realized_pnl' }
+        """
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
+        params = []
+        # If account is specified, filter by that account id
+        account_clause = ""
+        if account:
+            account_clause = "AND t.account_id = (SELECT id FROM accounts WHERE name = ?)"
+            params.append(account)
+
+        # gather distinct asset/account pairs where there are transactions
+        if account:
+            cursor.execute(
+                """
+                SELECT DISTINCT a.symbol, (SELECT name FROM accounts WHERE id = t.account_id) as account
+                FROM transactions t
+                JOIN assets a ON a.id = t.asset_id
+                WHERE t.account_id = (SELECT id FROM accounts WHERE name = ?)
+                """,
+                (account,)
+            )
+            pairs = cursor.fetchall()
+        else:
+            cursor.execute(
+                """
+                SELECT DISTINCT a.symbol, (SELECT name FROM accounts WHERE id = t.account_id) as account
+                FROM transactions t
+                JOIN assets a ON a.id = t.asset_id
+                """
+            )
+            pairs = cursor.fetchall()
+
+        results = []
+        for sym, acct in pairs:
+            qty_open = self.open_position_qty(sym, acct)
+
+            # compute cost_basis from remaining (unmatched) portions of buy transactions
+            asset = self.resolver.resolve(sym)
+            if acct:
+                cursor.execute(
+                    """
+                    SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
+                    FROM transactions t
+                    WHERE t.asset_id = ? AND t.account_id = (SELECT id FROM accounts WHERE name = ?) AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                    ORDER BY t.tx_date ASC, t.id ASC
+                    """,
+                    (asset['id'], acct)
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
+                    FROM transactions t
+                    WHERE t.asset_id = ? AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                    ORDER BY t.tx_date ASC, t.id ASC
+                    """,
+                    (asset['id'],)
+                )
+
+            cost_basis = Decimal('0')
+            total_open_qty = Decimal('0')
+            for row in cursor.fetchall():
+                buy_qty = Decimal(str(row[1]))
+                unit_price = Decimal(str(row[2])) if row[2] is not None else Decimal('0')
+                buy_fee = Decimal(str(row[3])) if row[3] is not None else Decimal('0')
+                matched_qty = Decimal(str(row[4]))
+
+                remaining_qty = buy_qty - matched_qty
+                if remaining_qty <= 0:
+                    continue
+                remaining_fee = buy_fee * (remaining_qty / buy_qty) if buy_qty > 0 else Decimal('0')
+                cost_basis += remaining_qty * unit_price + remaining_fee
+                total_open_qty += remaining_qty
+
+            avg_cost = (cost_basis / total_open_qty) if total_open_qty > 0 else Decimal('0')
+            realized = self.realized_pnl(sym, acct)
+
+            # get current_price from assets
+            cursor.execute("SELECT current_price, price_updated_at FROM assets WHERE id = ?", (asset['id'],))
+            row = cursor.fetchone()
+            current_price = Decimal(str(row[0])) if row and row[0] is not None else None
+            price_updated_at = row[1] if row else None
+
+            # calculate unrealized gain %
+            alert = ""
+            if current_price and price_updated_at and cost_basis > 0 and qty_open > 0:
+                market_value = qty_open * current_price
+                unrealized_pnl = market_value - cost_basis
+                unrealized_pct = (unrealized_pnl / cost_basis) * 100
+                if unrealized_pct >= 30:
+                    alert = "YES"
+
+            results.append({
+                'symbol': sym,
+                'account': acct,
+                'qty_open': qty_open,
+                'cost_basis': cost_basis,
+                'avg_cost': avg_cost,
+                'realized_pnl': realized,
+                'current_price': current_price,
+                'unrealized_pct': unrealized_pct if 'unrealized_pct' in locals() else None,
+                'alert': alert,
+            })
+
+        return results
+
+    def cash_balance(self, account: Optional[str] = None) -> Decimal:
+        """
+        Return cash balance using __USD_CASH__ asset total_usd sum.
+        """
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        usd = self.resolver.get_or_create_usd_cash()
+        if account:
+            cursor.execute(
+                "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ? AND account_id = (SELECT id FROM accounts WHERE name = ?)",
+                (usd['id'], account)
+            )
+        else:
+            cursor.execute(
+                "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ?",
+                (usd['id'],)
+            )
+        res = cursor.fetchone()[0]
+        return Decimal(str(res)) if res is not None else Decimal('0')
+
+    def summary(self, account: Optional[str] = None) -> dict:
+        """
+        Return summary dict: total_cost_basis, total_realized_pnl, cash_balance
+        """
+        positions = self.positions(account)
+        total_cost_basis = Decimal('0')
+        total_realized = Decimal('0')
+        for p in positions:
+            total_cost_basis += p['cost_basis']
+            total_realized += p['realized_pnl']
+
+        cash = self.cash_balance(account)
+
+        return {
+            'total_cost_basis': total_cost_basis,
+            'total_realized_pnl': total_realized,
+            'cash_balance': cash,
+        }
