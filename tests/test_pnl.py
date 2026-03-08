@@ -319,3 +319,135 @@ def test_realized_pnl_by_account(services):
     # Account2: (55000 - 2) - (50000 + 5) = 4993
     assert pnl1 == Decimal('19987')
     assert pnl2 == Decimal('4993')
+
+
+def test_positions_cost_basis_and_avg(services):
+    """Test positions() returns qty_open, cost_basis and avg_cost correctly."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('XRP')
+    acct_id = tx_svc._get_or_create_account('Main', cursor)
+    conn.commit()
+
+    # MIGRATION_BUY 10 @ $1
+    cursor.execute('BEGIN')
+    cursor.execute(
+        """
+        INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (asset['id'], acct_id, 'MIGRATION_BUY', 10.0, 1.0, 0.0, 10.0, '2020-01-01')
+    )
+    conn.commit()
+
+    # BUY 5 @ $2 + $1 fee
+    tx_svc.record_buy(symbol='XRP', account='Main', qty=Decimal('5'), unit_price=Decimal('2'), fee_usd=Decimal('1'), tx_date='2020-01-02')
+
+    # SELL 11 (FIFO: matches 10 from MIGRATION, 1 from BUY -> remaining M:0, B:4)
+    tx_svc.record_sell(symbol='XRP', account='Main', qty=Decimal('11'), unit_price=Decimal('3'), fee_usd=Decimal('2'), tx_date='2020-01-03')
+
+    positions = pnl_svc.positions(account='Main')
+    # find XRP position
+    xrp = [p for p in positions if p['symbol'] == 'XRP'][0]
+    # qty_open = (10 + 5) - 11 = 4
+    assert xrp['qty_open'] == Decimal('4')
+    # cost basis should be remaining from buys:
+    # MIGRATION: matched 10, remaining=0, cost = 0
+    # BUY: matched 1, remaining=4, cost = 4*2 + 1*(4/5) = 8 + 0.8 = 8.8
+    # total cost_basis = 8.8
+    assert abs(xrp['cost_basis'] - Decimal('8.8')) < Decimal('0.0001')
+    assert xrp['avg_cost'] == xrp['cost_basis'] / xrp['qty_open']
+
+
+def test_cash_balance_and_summary(services):
+    """Test cash balance using __USD_CASH__ and overall summary."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    usd = resolver.get_or_create_usd_cash()
+    acct_id = tx_svc._get_or_create_account('Main', cursor)
+    conn.commit()
+
+    # DEPOSIT -> increase cash (simulate by inserting a transaction on USD_CASH)
+    cursor.execute('BEGIN')
+    cursor.execute(
+        "INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (usd['id'], acct_id, 'DEPOSIT', 1.0, 1.0, 0.0, 1000.0, '2020-01-01')
+    )
+    # FEE -> reduce cash
+    cursor.execute(
+        "INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (usd['id'], acct_id, 'FEE', 1.0, 1.0, 0.0, -10.0, '2020-01-02')
+    )
+    conn.commit()
+
+    cash = pnl_svc.cash_balance(account='Main')
+    assert cash == Decimal('990')
+
+    summary = pnl_svc.summary(account='Main')
+    assert summary['cash_balance'] == Decimal('990')
+
+
+def test_positions_unrealized_gain_alerts(services):
+    """Test unrealized gain alerts for positions."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    # Buy 1 BTC @ $100
+    tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    # Set current_price to $100
+    btc_asset = resolver.resolve('BTC')
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (100.0, '2020-01-01', btc_asset['id']))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    btc = [p for p in positions if p['symbol'] == 'BTC'][0]
+    assert btc['current_price'] == Decimal('100')
+    assert btc['unrealized_pct'] == Decimal('0')
+    assert btc['alert'] == ""  # 0% < 30%
+
+    # Update current_price to $200
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (200.0, '2020-01-02', btc_asset['id']))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    btc = [p for p in positions if p['symbol'] == 'BTC'][0]
+    # cost_basis = 100
+    # market_value = 1 * 200 = 200
+    # unrealized = 100
+    # pct = 100 / 100 * 100 = 100%
+    assert btc['current_price'] == Decimal('200')
+    assert btc['unrealized_pct'] == Decimal('100')
+    assert btc['alert'] == "YES"  # >30%
+
+    # Test >30% for ETH
+    tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    eth_asset = resolver.resolve('ETH')
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (160.0, '2020-01-01', eth_asset['id']))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    eth = [p for p in positions if p['symbol'] == 'ETH'][0]
+    # cost_basis = 100
+    # mv = 160
+    # pnl = 60
+    # pct = 60%
+    assert eth['unrealized_pct'] == Decimal('60')
+    assert eth['alert'] == "YES"
+
+    # Test <30% for ADA
+    tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    ada_asset = resolver.resolve('ADA')
+    cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (125.0, '2020-01-01', ada_asset['id']))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    ada = [p for p in positions if p['symbol'] == 'ADA'][0]
+    # pct = 25%
+    assert ada['unrealized_pct'] == Decimal('25')
+    assert ada['alert'] == ""
