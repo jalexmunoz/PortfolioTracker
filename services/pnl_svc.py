@@ -218,17 +218,8 @@ class PnLService:
             avg_cost = (cost_basis / total_open_qty) if total_open_qty > 0 else Decimal('0')
             realized = self.realized_pnl(sym, acct)
 
-            # get current_price from latest transaction
-            if acct:
-                cursor.execute(
-                    "SELECT unit_price FROM transactions WHERE asset_id = ? AND account_id = (SELECT id FROM accounts WHERE name = ?) ORDER BY tx_date DESC, id DESC LIMIT 1",
-                    (asset['id'], acct)
-                )
-            else:
-                cursor.execute(
-                    "SELECT unit_price FROM transactions WHERE asset_id = ? ORDER BY tx_date DESC, id DESC LIMIT 1",
-                    (asset['id'],)
-                )
+            # get current_price from assets
+            cursor.execute("SELECT current_price FROM assets WHERE id = ?", (asset['id'],))
             row = cursor.fetchone()
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
 

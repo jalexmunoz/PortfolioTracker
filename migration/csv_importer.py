@@ -84,6 +84,7 @@ class CSVImporter:
                 if missing:
                     raise CSVImportError(f"Missing required columns: {missing}")
                 idx = {name: header_norm.index(name) for name in required}
+                price_idx = header_norm.index('price (usd)') if 'price (usd)' in header_norm else None
                 date_idx = header_norm.index('date') if 'date' in header_norm else None
 
                 for row_num, row in enumerate(reader, start=1):
@@ -110,6 +111,13 @@ class CSVImporter:
                     # insert
                     asset = self.resolver.resolve(symbol)
                     account_id = self._get_or_create_account(wallet, cursor)
+
+                    # update current_price if available
+                    if price_idx is not None and len(row) > price_idx:
+                        price_raw = row[price_idx].strip()
+                        price = self._clean_number(price_raw)
+                        if price is not None:
+                            cursor.execute("UPDATE assets SET current_price = ? WHERE id = ?", (float(price), asset['id']))
 
                     quantity = Decimal(str(qty))
                     cost_dec = Decimal(str(cost))

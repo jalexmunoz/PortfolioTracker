@@ -139,6 +139,7 @@ class Database:
             id INTEGER PRIMARY KEY,
             symbol TEXT UNIQUE NOT NULL,
             asset_type TEXT NOT NULL,
+            current_price REAL,
             tradingview_symbol TEXT,
             exchange TEXT,
             currency TEXT DEFAULT 'USD',
