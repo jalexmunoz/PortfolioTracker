@@ -168,9 +168,9 @@ def cli_positions(symbol, account):
     for p in svc.positions(account):
         if symbol and p['symbol'] != symbol:
             continue
-        rows.append((p['symbol'], p['account'] or '(all)', format_qty(p['qty_open']), format_money(p['avg_cost']), format_money(p['cost_basis'])))
+        rows.append((p['symbol'], p['account'] or '(all)', format_qty(p['qty_open']), format_money(p['avg_cost']), format_money(p['cost_basis']), p['alert']))
     if rows:
-        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis"], rows)
+        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis", "Alert"], rows)
     else:
         click.echo("No open positions found. Database may be empty. Run 'import-csv --execute' to import data.")
 

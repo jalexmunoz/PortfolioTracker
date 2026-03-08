@@ -218,6 +218,29 @@ class PnLService:
             avg_cost = (cost_basis / total_open_qty) if total_open_qty > 0 else Decimal('0')
             realized = self.realized_pnl(sym, acct)
 
+            # get current_price from latest transaction
+            if acct:
+                cursor.execute(
+                    "SELECT unit_price FROM transactions WHERE asset_id = ? AND account_id = (SELECT id FROM accounts WHERE name = ?) ORDER BY tx_date DESC, id DESC LIMIT 1",
+                    (asset['id'], acct)
+                )
+            else:
+                cursor.execute(
+                    "SELECT unit_price FROM transactions WHERE asset_id = ? ORDER BY tx_date DESC, id DESC LIMIT 1",
+                    (asset['id'],)
+                )
+            row = cursor.fetchone()
+            current_price = Decimal(str(row[0])) if row and row[0] is not None else None
+
+            # calculate unrealized gain %
+            alert = ""
+            if current_price and cost_basis > 0 and qty_open > 0:
+                market_value = qty_open * current_price
+                unrealized_pnl = market_value - cost_basis
+                unrealized_pct = (unrealized_pnl / cost_basis) * 100
+                if unrealized_pct >= 30:
+                    alert = "YES"
+
             results.append({
                 'symbol': sym,
                 'account': acct,
@@ -225,6 +248,9 @@ class PnLService:
                 'cost_basis': cost_basis,
                 'avg_cost': avg_cost,
                 'realized_pnl': realized,
+                'current_price': current_price,
+                'unrealized_pct': unrealized_pct if 'unrealized_pct' in locals() else None,
+                'alert': alert,
             })
 
         return results

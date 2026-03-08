@@ -389,3 +389,54 @@ def test_cash_balance_and_summary(services):
 
     summary = pnl_svc.summary(account='Main')
     assert summary['cash_balance'] == Decimal('990')
+
+
+def test_positions_unrealized_gain_alerts(services):
+    """Test unrealized gain alerts for positions."""
+    tx_svc, pnl_svc, db = services
+
+    # Buy 1 BTC @ $100
+    tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+
+    # Current price is the last transaction price: $100
+    positions = pnl_svc.positions(account='Main')
+    btc = [p for p in positions if p['symbol'] == 'BTC'][0]
+    assert btc['current_price'] == Decimal('100')
+    assert btc['unrealized_pct'] == Decimal('0')
+    assert btc['alert'] == ""  # 0% < 30%
+
+    # Simulate higher current price by adding another transaction
+    tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('0.1'), unit_price=Decimal('200'), fee_usd=Decimal('0'), tx_date='2020-01-02')
+
+    positions = pnl_svc.positions(account='Main')
+    btc = [p for p in positions if p['symbol'] == 'BTC'][0]
+    # Current price now $200
+    assert btc['current_price'] == Decimal('200')
+    # cost_basis = 1*100 + 0.1*200 = 120
+    # market_value = 1.1 * 200 = 220
+    # unrealized = 220 - 120 = 100
+    # pct = 100 / 120 * 100 ≈ 83.33%
+    expected_pct = (Decimal('100') / Decimal('120')) * 100
+    assert abs(btc['unrealized_pct'] - expected_pct) < Decimal('0.01')
+    assert btc['alert'] == "YES"  # >30%
+
+    # Test exactly 30%
+    # Reset, buy @100, last tx @160 -> pct = (60)/113 *100 ≈53%
+    tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('0.1'), unit_price=Decimal('160'), fee_usd=Decimal('0'), tx_date='2020-01-02')
+
+    positions = pnl_svc.positions(account='Main')
+    eth = [p for p in positions if p['symbol'] == 'ETH'][0]
+    expected_pct_eth = (Decimal('60') / Decimal('116')) * 100  # cost 116, mv 176, pnl 60, pct 60/116*100≈51.72%
+    assert abs(eth['unrealized_pct'] - expected_pct_eth) < Decimal('0.01')
+    assert eth['alert'] == "YES"  # >30%
+
+    # Test <30%, no alert
+    tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('0.1'), unit_price=Decimal('125'), fee_usd=Decimal('0'), tx_date='2020-01-02')
+
+    positions = pnl_svc.positions(account='Main')
+    ada = [p for p in positions if p['symbol'] == 'ADA'][0]
+    expected_pct_ada = (Decimal('25') / Decimal('112.5')) * 100  # ≈22.22%
+    assert abs(ada['unrealized_pct'] - expected_pct_ada) < Decimal('0.01')
+    assert ada['alert'] == ""  # <30%
