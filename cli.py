@@ -28,6 +28,17 @@ def parse_decimal(ctx, param, value):
         raise click.BadParameter(f"{param} must be a number, got '{value}'")
 
 
+def format_money(value):
+    """Format decimal as currency: 1234.56 -> 1,234.56"""
+    return f"{value:,.2f}"
+
+
+def format_qty(value):
+    """Format quantity: trim trailing zeros, reasonable precision."""
+    s = f"{value:.8f}"
+    return s.rstrip('0').rstrip('.') if '.' in s else s
+
+
 def ensure_db():
     path = get_db_path()
     db = Database(path)
@@ -157,7 +168,7 @@ def cli_positions(symbol, account):
     for p in svc.positions(account):
         if symbol and p['symbol'] != symbol:
             continue
-        rows.append((p['symbol'], p['account'] or '(all)', str(p['qty_open']), str(p['avg_cost']), str(p['cost_basis'])))
+        rows.append((p['symbol'], p['account'] or '(all)', format_qty(p['qty_open']), format_money(p['avg_cost']), format_money(p['cost_basis'])))
     if rows:
         display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis"], rows)
     else:
@@ -175,9 +186,9 @@ def cli_summary(account):
     if s['total_cost_basis'] == 0 and s['total_realized_pnl'] == 0 and s['cash_balance'] == 0:
         click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
     else:
-        click.echo(f"Total cost basis: {s['total_cost_basis']}")
-        click.echo(f"Total realized PnL: {s['total_realized_pnl']}")
-        click.echo(f"Cash balance: {s['cash_balance']}")
+        click.echo(f"Total cost basis: {format_money(s['total_cost_basis'])}")
+        click.echo(f"Total realized PnL: {format_money(s['total_realized_pnl'])}")
+        click.echo(f"Cash balance: {format_money(s['cash_balance'])}")
 
 
 @main.command("pnl")
