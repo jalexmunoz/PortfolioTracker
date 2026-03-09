@@ -1,6 +1,7 @@
 """
 PnL (Profit and Loss) service.
 """
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -23,6 +24,28 @@ class PnLService:
         """
         self.db = db
         self.resolver = resolver
+    
+    def _classify_price_quality(self, asset_id: int) -> str:
+        """
+        Classify price quality for an asset.
+        
+        Returns: 'usable', 'stale', 'unavailable'
+        """
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT current_price, price_source, price_updated_at FROM assets WHERE id = ?", (asset_id,))
+        row = cursor.fetchone()
+        if not row or row[0] is None or row[2] is None:
+            return 'unavailable'
+        current_price, price_source, price_updated_at = row
+        # Parse price_updated_at if it's string
+        if isinstance(price_updated_at, str):
+            price_updated_at = datetime.fromisoformat(price_updated_at.replace('Z', '+00:00'))
+        now = datetime.now()
+        is_old = price_updated_at < now - timedelta(days=7)
+        if price_source == 'csv_bootstrap' or is_old:
+            return 'stale'
+        return 'usable'
     
     def realized_pnl(
         self,
@@ -269,19 +292,43 @@ class PnLService:
 
     def summary(self, account: Optional[str] = None) -> dict:
         """
-        Return summary dict: total_cost_basis, total_realized_pnl, cash_balance
+        Return summary dict: total_cost_basis, total_realized_pnl, cash_balance,
+        total_market_value (usable prices only), total_unrealized_pnl, unrealized_return_pct,
+        price_quality_counts
         """
         positions = self.positions(account)
         total_cost_basis = Decimal('0')
         total_realized = Decimal('0')
+        total_market_value = Decimal('0')
+        total_unrealized_pnl = Decimal('0')
+        price_quality_counts = {'usable': 0, 'stale': 0, 'unavailable': 0}
+        
         for p in positions:
             total_cost_basis += p['cost_basis']
             total_realized += p['realized_pnl']
-
+            
+            asset = self.resolver.resolve(p['symbol'])
+            quality = self._classify_price_quality(asset['id'])
+            price_quality_counts[quality] += 1
+            
+            if quality == 'usable' and p['current_price'] and p['qty_open'] > 0:
+                market_value = p['qty_open'] * p['current_price']
+                total_market_value += market_value
+                unrealized_pnl = market_value - p['cost_basis']
+                total_unrealized_pnl += unrealized_pnl
+        
         cash = self.cash_balance(account)
-
+        
+        unrealized_return_pct = None
+        if total_cost_basis > 0:
+            unrealized_return_pct = ((total_unrealized_pnl / total_cost_basis) * 100).quantize(Decimal('0.01'))
+        
         return {
             'total_cost_basis': total_cost_basis,
             'total_realized_pnl': total_realized,
             'cash_balance': cash,
+            'total_market_value': total_market_value,
+            'total_unrealized_pnl': total_unrealized_pnl,
+            'unrealized_return_pct': unrealized_return_pct,
+            'price_quality_counts': price_quality_counts,
         }

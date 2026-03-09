@@ -88,3 +88,39 @@ def test_refresh_prices(tmp_path, monkeypatch):
     result = runner.invoke(main, ["refresh-prices"], env=env)
     assert result.exit_code == 0
     assert "Prices refreshed:" in result.output
+
+
+def test_summary_with_valuation(tmp_path, monkeypatch):
+    # set DB path to temporary file
+    db_file = tmp_path / "test.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    # init-db
+    result = runner.invoke(main, ["init-db"], env=env)
+    assert result.exit_code == 0
+
+    # buy BTC
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    # Manually set prices in DB for testing
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+    from datetime import datetime
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve('BTC')
+    recent_date = datetime.now().isoformat()
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (200.0, 'coingecko', recent_date, btc_asset['id']))
+    conn.commit()
+
+    # summary
+    result = runner.invoke(main, ["summary"], env=env)
+    assert result.exit_code == 0
+    assert "Total cost basis: 100.00" in result.output
+    assert "Total market value (usable prices): 200.00" in result.output
+    assert "Total unrealized PnL (usable prices): 100.00" in result.output
+    assert "Unrealized return %: 100.00%" in result.output
+    assert "Price quality: 1 usable" in result.output

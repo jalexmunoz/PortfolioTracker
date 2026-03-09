@@ -179,7 +179,7 @@ def cli_positions(symbol, account):
 @main.command("summary")
 @click.option("--account", default=None)
 def cli_summary(account):
-    """Show portfolio summary (cost basis, realized PnL, cash)."""
+    """Show portfolio summary (cost basis, realized PnL, cash, valuation with usable prices)."""
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = PnLService(db, resolver)
@@ -190,6 +190,14 @@ def cli_summary(account):
         click.echo(f"Total cost basis: {format_money(s['total_cost_basis'])}")
         click.echo(f"Total realized PnL: {format_money(s['total_realized_pnl'])}")
         click.echo(f"Cash balance: {format_money(s['cash_balance'])}")
+        click.echo(f"Total market value (usable prices): {format_money(s['total_market_value'])}")
+        click.echo(f"Total unrealized PnL (usable prices): {format_money(s['total_unrealized_pnl'])}")
+        if s['unrealized_return_pct'] is not None:
+            click.echo(f"Unrealized return %: {s['unrealized_return_pct']:.2f}%")
+        else:
+            click.echo("Unrealized return %: N/A")
+        counts = s['price_quality_counts']
+        click.echo(f"Price quality: {counts['usable']} usable, {counts['stale']} stale, {counts['unavailable']} unavailable")
 
 
 @main.command("pnl")

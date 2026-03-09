@@ -451,3 +451,71 @@ def test_positions_unrealized_gain_alerts(services):
     # pct = 25%
     assert ada['unrealized_pct'] == Decimal('25')
     assert ada['alert'] == ""
+
+
+def test_summary_with_valuation(services):
+    """Test summary with valuation using usable prices."""
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    # Buy BTC @ $100, cost_basis = 100
+    tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    btc_asset = resolver.resolve('BTC')
+    # Set usable price: $200, updated recently
+    from datetime import datetime
+    recent_date = datetime.now().isoformat()
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (200.0, 'coingecko', recent_date, btc_asset['id']))
+    conn.commit()
+
+    # Buy ETH @ $100, cost_basis = 100
+    tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    eth_asset = resolver.resolve('ETH')
+    # Set stale price: from csv_bootstrap
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (150.0, 'csv_bootstrap', '2020-01-01', eth_asset['id']))
+    conn.commit()
+
+    # Buy ADA @ $100, cost_basis = 100
+    tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    ada_asset = resolver.resolve('ADA')
+    # Set unavailable: no current_price
+    cursor.execute("UPDATE assets SET current_price = NULL, price_updated_at = NULL WHERE id = ?", (ada_asset['id'],))
+    conn.commit()
+
+    s = pnl_svc.summary(account='Main')
+    assert s['total_cost_basis'] == Decimal('300')
+    assert s['total_realized_pnl'] == Decimal('0')
+    assert s['cash_balance'] == Decimal('0')
+    # Only BTC is usable: market_value = 1 * 200 = 200, unrealized = 200 - 100 = 100
+    assert s['total_market_value'] == Decimal('200')
+    assert s['total_unrealized_pnl'] == Decimal('100')
+    assert s['unrealized_return_pct'] == Decimal('33.33')  # 100 / 300 * 100
+    assert s['price_quality_counts'] == {'usable': 1, 'stale': 1, 'unavailable': 1}
+
+
+def test_price_quality_classification(services):
+    """Test price quality classification."""
+    _, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    # Create assets
+    btc_asset = resolver.resolve('BTC')
+    eth_asset = resolver.resolve('ETH')
+    ada_asset = resolver.resolve('ADA')
+
+    # Usable: price set, source not csv_bootstrap, recent
+    from datetime import datetime
+    recent_date = datetime.now().isoformat()
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (100.0, 'coingecko', recent_date, btc_asset['id']))
+    # Stale: csv_bootstrap
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (100.0, 'csv_bootstrap', recent_date, eth_asset['id']))
+    # Unavailable: no price
+    cursor.execute("UPDATE assets SET current_price = NULL WHERE id = ?", (ada_asset['id'],))
+    conn.commit()
+
+    assert pnl_svc._classify_price_quality(btc_asset['id']) == 'usable'
+    assert pnl_svc._classify_price_quality(eth_asset['id']) == 'stale'
+    assert pnl_svc._classify_price_quality(ada_asset['id']) == 'unavailable'
