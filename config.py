@@ -1,7 +1,8 @@
-"""
+﻿"""
 Centralized configuration for Portfolio Tracker v2.
 """
 
+import os
 from pathlib import Path
 
 # Database path (relative to package root)
@@ -21,3 +22,6 @@ USD_CASH_SYMBOL = "__USD_CASH__"
 DEFAULT_ACCOUNT_TYPE = "wallet"
 DEFAULT_ASSET_CURRENCY = "USD"
 DEFAULT_ASSET_DIVISOR = 1.0
+
+# External providers
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
