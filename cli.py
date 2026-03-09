@@ -223,5 +223,12 @@ def cli_pnl(symbol, account):
 def cli_refresh_prices():
     """Refresh current prices for active assets from external sources."""
     db = ensure_db()
-    updated, skipped = refresh_prices(db)
-    click.echo(f"Prices refreshed: {updated} updated, {skipped} skipped")
+    report = refresh_prices(db)
+    click.echo(
+        "Prices refreshed: "
+        f"{report.updated} updated, "
+        f"{report.skipped_unsupported} skipped unsupported, "
+        f"{report.skipped_unmapped} skipped unmapped, "
+        f"{report.failed_lookup} failed lookup"
+    )
+

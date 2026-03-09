@@ -1,12 +1,14 @@
 import os
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
 from portfolio_tracker_v2.cli import main
 from portfolio_tracker_v2.config import DB_PATH
+from portfolio_tracker_v2.services.price_svc import RefreshReport
 
 
 def run_cmd(runner, args, env=None):
@@ -84,10 +86,17 @@ def test_refresh_prices(tmp_path, monkeypatch):
     result = runner.invoke(main, ["init-db"], env=env)
     assert result.exit_code == 0
 
-    # refresh-prices
-    result = runner.invoke(main, ["refresh-prices"], env=env)
+    with patch("portfolio_tracker_v2.cli.refresh_prices") as mock_refresh:
+        mock_refresh.return_value = RefreshReport(
+            updated=1,
+            skipped_unsupported=2,
+            skipped_unmapped=3,
+            failed_lookup=4,
+        )
+        result = runner.invoke(main, ["refresh-prices"], env=env)
+
     assert result.exit_code == 0
-    assert "Prices refreshed:" in result.output
+    assert "Prices refreshed: 1 updated, 2 skipped unsupported, 3 skipped unmapped, 4 failed lookup" in result.output
 
 
 def test_summary_with_valuation(tmp_path, monkeypatch):
@@ -107,13 +116,17 @@ def test_summary_with_valuation(tmp_path, monkeypatch):
     from portfolio_tracker_v2.core import Database
     from portfolio_tracker_v2.core.asset_resolver import AssetResolver
     from datetime import datetime
+
     db = Database(str(db_file))
     resolver = AssetResolver(db)
     conn = db.connect()
     cursor = conn.cursor()
-    btc_asset = resolver.resolve('BTC')
+    btc_asset = resolver.resolve("BTC")
     recent_date = datetime.now().isoformat()
-    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (200.0, 'coingecko', recent_date, btc_asset['id']))
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", recent_date, btc_asset["id"]),
+    )
     conn.commit()
 
     # summary
