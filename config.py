@@ -1,12 +1,19 @@
-﻿"""
+"""
 Centralized configuration for Portfolio Tracker v2.
 """
 
 import os
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
 # Database path (relative to package root)
 PACKAGE_ROOT = Path(__file__).parent
+if load_dotenv is not None:
+    load_dotenv(PACKAGE_ROOT.parent / ".env")
 DB_PATH = str(PACKAGE_ROOT / "portfolio.db")
 
 # CSV paths
@@ -25,3 +32,4 @@ DEFAULT_ASSET_DIVISOR = 1.0
 
 # External providers
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
+

@@ -408,8 +408,10 @@ def test_positions_unrealized_gain_alerts(services):
     positions = pnl_svc.positions(account='Main')
     btc = [p for p in positions if p['symbol'] == 'BTC'][0]
     assert btc['current_price'] == Decimal('100')
-    assert btc['unrealized_pct'] == Decimal('0')
-    assert btc['alert'] == ""  # 0% < 30%
+    assert btc['valuation_method'] == 'market_live'
+    assert btc['valuation_status'] == 'stale'
+    assert btc['unrealized_pct'] is None
+    assert btc['alert'] == ""
 
     # Update current_price to $200
     cursor.execute("UPDATE assets SET current_price = ?, price_updated_at = ? WHERE id = ?", (200.0, '2020-01-02', btc_asset['id']))
@@ -422,8 +424,9 @@ def test_positions_unrealized_gain_alerts(services):
     # unrealized = 100
     # pct = 100 / 100 * 100 = 100%
     assert btc['current_price'] == Decimal('200')
-    assert btc['unrealized_pct'] == Decimal('100')
-    assert btc['alert'] == "YES"  # >30%
+    assert btc['valuation_status'] == 'stale'
+    assert btc['unrealized_pct'] is None
+    assert btc['alert'] == ""
 
     # Test >30% for ETH
     tx_svc.record_buy(symbol='ETH', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
@@ -437,8 +440,9 @@ def test_positions_unrealized_gain_alerts(services):
     # mv = 160
     # pnl = 60
     # pct = 60%
-    assert eth['unrealized_pct'] == Decimal('60')
-    assert eth['alert'] == "YES"
+    assert eth['valuation_status'] == 'stale'
+    assert eth['unrealized_pct'] is None
+    assert eth['alert'] == ""
 
     # Test <30% for ADA
     tx_svc.record_buy(symbol='ADA', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
@@ -449,7 +453,8 @@ def test_positions_unrealized_gain_alerts(services):
     positions = pnl_svc.positions(account='Main')
     ada = [p for p in positions if p['symbol'] == 'ADA'][0]
     # pct = 25%
-    assert ada['unrealized_pct'] == Decimal('25')
+    assert ada['valuation_status'] == 'stale'
+    assert ada['unrealized_pct'] is None
     assert ada['alert'] == ""
 
 
@@ -487,10 +492,13 @@ def test_summary_with_valuation(services):
     assert s['total_cost_basis'] == Decimal('300')
     assert s['total_realized_pnl'] == Decimal('0')
     assert s['cash_balance'] == Decimal('0')
-    # Only BTC is usable: market_value = 1 * 200 = 200, unrealized = 200 - 100 = 100
+    assert s['total_equity'] == Decimal('200')
+    assert s['market_covered_value'] == Decimal('200')
+    assert s['non_market_valued'] == Decimal('0')
+    assert s['unvalued_excluded_cost_basis'] == Decimal('200')
     assert s['total_market_value'] == Decimal('200')
     assert s['total_unrealized_pnl'] == Decimal('100')
-    assert s['unrealized_return_pct'] == Decimal('33.33')  # 100 / 300 * 100
+    assert s['unrealized_return_pct'] == Decimal('100.00')
     assert s['price_quality_counts'] == {'usable': 1, 'stale': 1, 'unavailable': 1}
 
 
@@ -519,3 +527,63 @@ def test_price_quality_classification(services):
     assert pnl_svc._classify_price_quality(btc_asset['id']) == 'usable'
     assert pnl_svc._classify_price_quality(eth_asset['id']) == 'stale'
     assert pnl_svc._classify_price_quality(ada_asset['id']) == 'unavailable'
+
+
+def test_summary_hybrid_valuation_methods(services):
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    tx_svc.record_buy(symbol='BBVA CDT', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    tx_svc.record_buy(symbol='FONDO DINAMICO', account='Main', qty=Decimal('2'), unit_price=Decimal('50'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    tx_svc.record_buy(symbol='SWTCH', account='Main', qty=Decimal('1'), unit_price=Decimal('25'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+
+    bbva = resolver.resolve('BBVA CDT')
+    fondo = resolver.resolve('FONDO DINAMICO')
+    swtch = resolver.resolve('SWTCH')
+    cursor.execute("UPDATE assets SET current_price = NULL, price_source = NULL, price_updated_at = NULL WHERE id = ?", (bbva['id'],))
+    cursor.execute("UPDATE assets SET current_price = NULL, price_source = NULL, price_updated_at = NULL WHERE id = ?", (fondo['id'],))
+    cursor.execute("UPDATE assets SET current_price = NULL, price_updated_at = NULL WHERE id = ?", (swtch['id'],))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    by_symbol = {p['symbol']: p for p in positions}
+    assert by_symbol['BBVA CDT']['valuation_method'] == 'contractual_value'
+    assert by_symbol['BBVA CDT']['valuation_status'] == 'usable_non_market'
+    assert by_symbol['FONDO DINAMICO']['valuation_method'] == 'snapshot_imported'
+    assert by_symbol['FONDO DINAMICO']['valuation_status'] == 'usable_non_market'
+    assert 'SWTCH' not in by_symbol
+
+    summary = pnl_svc.summary(account='Main')
+    assert summary['total_equity'] == Decimal('200')
+    assert summary['market_covered_value'] == Decimal('0')
+    assert summary['non_market_valued'] == Decimal('200')
+    assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
+    assert summary['unvalued_positions'] == 0
+
+
+def test_positions_and_summary_exclude_inactive_assets(services):
+    tx_svc, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    tx_svc.record_buy(symbol='SWTCH', account='Main', qty=Decimal('1'), unit_price=Decimal('25'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+    tx_svc.record_buy(symbol='BTC', account='Main', qty=Decimal('1'), unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2020-01-01')
+
+    swtch = resolver.resolve('SWTCH')
+    btc = resolver.resolve('BTC')
+    cursor.execute("UPDATE assets SET is_active = 0 WHERE id = ?", (swtch['id'],))
+    cursor.execute("UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?", (200.0, 'coingecko', '2099-01-01', btc['id']))
+    conn.commit()
+
+    positions = pnl_svc.positions(account='Main')
+    symbols = {p['symbol'] for p in positions}
+    assert 'SWTCH' not in symbols
+    assert 'BTC' in symbols
+
+    summary = pnl_svc.summary(account='Main')
+    assert summary['total_cost_basis'] == Decimal('100')
+    assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
+    assert summary['total_equity'] == Decimal('200')

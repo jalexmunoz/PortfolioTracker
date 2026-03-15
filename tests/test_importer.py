@@ -133,3 +133,24 @@ BTC,1,100,150,Main"""
     assert row[0] == 150.0
     assert row[1] == 'csv_bootstrap'
     assert row[2] == '2000-01-01'
+
+
+def test_import_sets_snapshot_imported_source(tmp_path):
+    csv_content = """Symbol,Quantity,Total Cost (USD),Price (USD),Wallet
+FONDO DINAMICO,2,200,120,Main"""
+    csv_file = tmp_path / "snapshot.csv"
+    csv_file.write_text(csv_content)
+
+    db = setup_test_db(tmp_path)
+    resolver = AssetResolver(db)
+    importer = CSVImporter(db, resolver, str(csv_file))
+
+    importer.execute()
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source, valuation_method FROM assets WHERE symbol = 'FONDO DINAMICO'")
+    row = cursor.fetchone()
+    assert row[0] == 120.0
+    assert row[1] == 'snapshot_imported'
+    assert row[2] == 'snapshot_imported'

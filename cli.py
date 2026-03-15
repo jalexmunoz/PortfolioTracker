@@ -44,6 +44,7 @@ def ensure_db():
     path = get_db_path()
     db = Database(path)
     db.connect()
+    db.init_schema()
     return db
 
 
@@ -169,9 +170,18 @@ def cli_positions(symbol, account):
     for p in svc.positions(account):
         if symbol and p['symbol'] != symbol:
             continue
-        rows.append((p['symbol'], p['account'] or '(all)', format_qty(p['qty_open']), format_money(p['avg_cost']), format_money(p['cost_basis']), p['alert']))
+        rows.append((
+            p['symbol'],
+            p['account'] or '(all)',
+            format_qty(p['qty_open']),
+            format_money(p['avg_cost']),
+            format_money(p['cost_basis']),
+            p['valuation_method'],
+            p['valuation_status'],
+            p['alert'],
+        ))
     if rows:
-        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis", "Alert"], rows)
+        display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis", "Val Method", "Val Status", "Alert"], rows)
     else:
         click.echo("No open positions found. Database may be empty. Run 'import-csv --execute' to import data.")
 
@@ -190,14 +200,17 @@ def cli_summary(account):
         click.echo(f"Total cost basis: {format_money(s['total_cost_basis'])}")
         click.echo(f"Total realized PnL: {format_money(s['total_realized_pnl'])}")
         click.echo(f"Cash balance: {format_money(s['cash_balance'])}")
-        click.echo(f"Total market value (usable prices): {format_money(s['total_market_value'])}")
-        click.echo(f"Total unrealized PnL (usable prices): {format_money(s['total_unrealized_pnl'])}")
+        click.echo(f"Total Equity: {format_money(s['total_equity'])}")
+        click.echo(f"Market-Covered Value: {format_money(s['market_covered_value'])}")
+        click.echo(f"Non-Market Valued: {format_money(s['non_market_valued'])}")
+        click.echo(f"Unvalued / Excluded (cost basis): {format_money(s['unvalued_excluded_cost_basis'])}")
+        click.echo(f"Total unrealized PnL (approved valuations): {format_money(s['total_unrealized_pnl'])}")
         if s['unrealized_return_pct'] is not None:
-            click.echo(f"Unrealized return %: {s['unrealized_return_pct']:.2f}%")
+            click.echo(f"Unrealized return % (approved valuations): {s['unrealized_return_pct']:.2f}%")
         else:
-            click.echo("Unrealized return %: N/A")
+            click.echo("Unrealized return % (approved valuations): N/A")
         counts = s['price_quality_counts']
-        click.echo(f"Price quality: {counts['usable']} usable, {counts['stale']} stale, {counts['unavailable']} unavailable")
+        click.echo(f"Market price quality: {counts['usable']} usable, {counts['stale']} stale, {counts['unavailable']} unavailable")
 
 
 @main.command("pnl")
@@ -229,6 +242,6 @@ def cli_refresh_prices():
         f"{report.updated} updated, "
         f"{report.skipped_unsupported} skipped unsupported, "
         f"{report.skipped_unmapped} skipped unmapped, "
-        f"{report.failed_lookup} failed lookup"
+        f"{report.failed_final} failed final"
     )
 

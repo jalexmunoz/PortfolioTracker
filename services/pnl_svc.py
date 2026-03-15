@@ -10,63 +10,88 @@ from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 
 
 class PnLService:
-    """
-    Service for calculating position and profit/loss metrics.
-    """
-    
+    """Service for calculating position and valuation metrics."""
+
+    APPROVED_NON_MARKET_METHODS = {'snapshot_imported', 'contractual_value'}
+
     def __init__(self, db: Database, resolver: AssetResolver):
-        """
-        Initialize PnLService.
-        
-        Args:
-            db: Database instance.
-            resolver: AssetResolver for symbol resolution.
-        """
         self.db = db
         self.resolver = resolver
-    
+
+    def _parse_price_updated_at(self, price_updated_at):
+        if isinstance(price_updated_at, str):
+            return datetime.fromisoformat(price_updated_at.replace('Z', '+00:00'))
+        return price_updated_at
+
     def _classify_price_quality(self, asset_id: int) -> str:
-        """
-        Classify price quality for an asset.
-        
-        Returns: 'usable', 'stale', 'unavailable'
-        """
         conn = self.db.connect()
         cursor = conn.cursor()
-        cursor.execute("SELECT current_price, price_source, price_updated_at FROM assets WHERE id = ?", (asset_id,))
+        cursor.execute(
+            "SELECT current_price, price_source, price_updated_at FROM assets WHERE id = ?",
+            (asset_id,),
+        )
         row = cursor.fetchone()
         if not row or row[0] is None or row[2] is None:
             return 'unavailable'
-        current_price, price_source, price_updated_at = row
-        # Parse price_updated_at if it's string
-        if isinstance(price_updated_at, str):
-            price_updated_at = datetime.fromisoformat(price_updated_at.replace('Z', '+00:00'))
+        _, price_source, price_updated_at = row
+        price_updated_at = self._parse_price_updated_at(price_updated_at)
         now = datetime.now()
         is_old = price_updated_at < now - timedelta(days=7)
         if price_source == 'csv_bootstrap' or is_old:
             return 'stale'
         return 'usable'
-    
-    def realized_pnl(
-        self,
-        symbol: Optional[str] = None,
-        account: Optional[str] = None,
-    ) -> Decimal:
-        """
-        Calculate realized P&L from closed lots.
-        
-        P&L = (sell_total - sell_fee_alloc) - (buy_total + buy_fee_alloc)
-        
-        Args:
-            symbol: Filter by symbol (if None, all symbols).
-            account: Filter by account (if None, all accounts).
-        
-        Returns:
-            Total realized P&L (Decimal).
-        """
+
+    def _resolve_valuation_status(self, valuation_method: str, asset_id: int, current_price: Decimal | None) -> str:
+        valuation_method = valuation_method or 'unvalued'
+        if valuation_method == 'market_live':
+            return self._classify_price_quality(asset_id)
+        if valuation_method == 'snapshot_imported':
+            return 'usable_non_market' if current_price is not None else 'unavailable'
+        if valuation_method == 'contractual_value':
+            return 'usable_non_market' if current_price is not None else 'unavailable'
+        return 'unvalued'
+
+    def _get_non_market_approved_price(self, asset_id: int, account: Optional[str]) -> Decimal | None:
+        """Fallback approved valuation for non-market assets from latest buy-side unit price."""
         conn = self.db.connect()
         cursor = conn.cursor()
-        
+
+        if account:
+            cursor.execute(
+                """
+                SELECT t.unit_price
+                FROM transactions t
+                WHERE t.asset_id = ?
+                  AND t.account_id = (SELECT id FROM accounts WHERE name = ?)
+                  AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                  AND t.unit_price IS NOT NULL
+                ORDER BY t.tx_date DESC, t.id DESC
+                LIMIT 1
+                """,
+                (asset_id, account),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT t.unit_price
+                FROM transactions t
+                WHERE t.asset_id = ?
+                  AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                  AND t.unit_price IS NOT NULL
+                ORDER BY t.tx_date DESC, t.id DESC
+                LIMIT 1
+                """,
+                (asset_id,),
+            )
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return Decimal(str(row[0]))
+
+    def realized_pnl(self, symbol: Optional[str] = None, account: Optional[str] = None) -> Decimal:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
         query = """
         SELECT
             SUM(
@@ -78,44 +103,28 @@ class PnLService:
         JOIN transactions t_sell ON lm.sell_tx_id = t_sell.id
         WHERE 1=1
         """
-        
+
         params = []
-        
+
         if symbol:
             asset = self.resolver.resolve(symbol)
             query += " AND t_buy.asset_id = ?"
             params.append(asset['id'])
-        
+
         if account:
             query += " AND t_buy.account_id = (SELECT id FROM accounts WHERE name = ?)"
             params.append(account)
-        
+
         cursor.execute(query, params)
         result = cursor.fetchone()[0]
-        
+
         return Decimal(str(result)) if result is not None else Decimal('0')
-    
-    def open_position_qty(
-        self,
-        symbol: str,
-        account: Optional[str] = None,
-    ) -> Decimal:
-        """
-        Calculate open position quantity (unmatched buys - sells).
-        
-        Takes all BUY + MIGRATION_BUY minus all SELL for a symbol.
-        
-        Args:
-            symbol: Asset symbol.
-            account: Filter by account (if None, all accounts).
-        
-        Returns:
-            Quantity held (Decimal).
-        """
+
+    def open_position_qty(self, symbol: str, account: Optional[str] = None) -> Decimal:
         asset = self.resolver.resolve(symbol)
         conn = self.db.connect()
         cursor = conn.cursor()
-        
+
         query = """
         WITH buy_qty AS (
             SELECT COALESCE(SUM(quantity), 0) as total
@@ -129,11 +138,10 @@ class PnLService:
         )
         SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
         """
-        
+
         params = [asset['id'], asset['id']]
-        
+
         if account:
-            # Refactor to include account filter
             query = """
             WITH buy_qty AS (
                 SELECT COALESCE(SUM(quantity), 0) as total
@@ -150,29 +158,16 @@ class PnLService:
             SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
             """
             params = [asset['id'], account, asset['id'], account]
-        
+
         cursor.execute(query, params)
         result = cursor.fetchone()[0]
-        
+
         return Decimal(str(result))
 
     def positions(self, account: Optional[str] = None) -> list:
-        """
-        Return list of position dicts grouped by symbol (and account if account is None).
-
-        Each dict: { 'symbol', 'account', 'qty_open', 'cost_basis', 'avg_cost', 'realized_pnl' }
-        """
         conn = self.db.connect()
         cursor = conn.cursor()
 
-        params = []
-        # If account is specified, filter by that account id
-        account_clause = ""
-        if account:
-            account_clause = "AND t.account_id = (SELECT id FROM accounts WHERE name = ?)"
-            params.append(account)
-
-        # gather distinct asset/account pairs where there are transactions
         if account:
             cursor.execute(
                 """
@@ -180,8 +175,9 @@ class PnLService:
                 FROM transactions t
                 JOIN assets a ON a.id = t.asset_id
                 WHERE t.account_id = (SELECT id FROM accounts WHERE name = ?)
+                  AND a.is_active = 1
                 """,
-                (account,)
+                (account,),
             )
             pairs = cursor.fetchall()
         else:
@@ -190,6 +186,7 @@ class PnLService:
                 SELECT DISTINCT a.symbol, (SELECT name FROM accounts WHERE id = t.account_id) as account
                 FROM transactions t
                 JOIN assets a ON a.id = t.asset_id
+                WHERE a.is_active = 1
                 """
             )
             pairs = cursor.fetchall()
@@ -197,9 +194,8 @@ class PnLService:
         results = []
         for sym, acct in pairs:
             qty_open = self.open_position_qty(sym, acct)
-
-            # compute cost_basis from remaining (unmatched) portions of buy transactions
             asset = self.resolver.resolve(sym)
+
             if acct:
                 cursor.execute(
                     """
@@ -209,7 +205,7 @@ class PnLService:
                     WHERE t.asset_id = ? AND t.account_id = (SELECT id FROM accounts WHERE name = ?) AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
-                    (asset['id'], acct)
+                    (asset['id'], acct),
                 )
             else:
                 cursor.execute(
@@ -220,7 +216,7 @@ class PnLService:
                     WHERE t.asset_id = ? AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
-                    (asset['id'],)
+                    (asset['id'],),
                 )
 
             cost_basis = Decimal('0')
@@ -241,94 +237,119 @@ class PnLService:
             avg_cost = (cost_basis / total_open_qty) if total_open_qty > 0 else Decimal('0')
             realized = self.realized_pnl(sym, acct)
 
-            # get current_price from assets
-            cursor.execute("SELECT current_price, price_updated_at FROM assets WHERE id = ?", (asset['id'],))
+            cursor.execute(
+                "SELECT current_price, valuation_method FROM assets WHERE id = ?",
+                (asset['id'],),
+            )
             row = cursor.fetchone()
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
-            price_updated_at = row[1] if row else None
+            valuation_method = row[1] if row and row[1] else asset.get('valuation_method', 'unvalued')
+            effective_price = current_price
+            if effective_price is None and valuation_method in self.APPROVED_NON_MARKET_METHODS:
+                effective_price = self._get_non_market_approved_price(asset['id'], acct)
+            valuation_status = self._resolve_valuation_status(valuation_method, asset['id'], effective_price)
 
-            # calculate unrealized gain %
-            alert = ""
-            if current_price and price_updated_at and cost_basis > 0 and qty_open > 0:
-                market_value = qty_open * current_price
-                unrealized_pnl = market_value - cost_basis
+            approved_value = None
+            if qty_open > 0 and effective_price is not None:
+                if valuation_method == 'market_live' and valuation_status == 'usable':
+                    approved_value = qty_open * effective_price
+                elif valuation_method in self.APPROVED_NON_MARKET_METHODS and valuation_status != 'unavailable':
+                    approved_value = qty_open * effective_price
+
+            alert = ''
+            unrealized_pct = None
+            if approved_value is not None and cost_basis > 0 and valuation_method == 'market_live':
+                unrealized_pnl = approved_value - cost_basis
                 unrealized_pct = (unrealized_pnl / cost_basis) * 100
                 if unrealized_pct >= 30:
-                    alert = "YES"
+                    alert = 'YES'
 
-            results.append({
-                'symbol': sym,
-                'account': acct,
-                'qty_open': qty_open,
-                'cost_basis': cost_basis,
-                'avg_cost': avg_cost,
-                'realized_pnl': realized,
-                'current_price': current_price,
-                'unrealized_pct': unrealized_pct if 'unrealized_pct' in locals() else None,
-                'alert': alert,
-            })
+            results.append(
+                {
+                    'symbol': sym,
+                    'account': acct,
+                    'qty_open': qty_open,
+                    'cost_basis': cost_basis,
+                    'avg_cost': avg_cost,
+                    'realized_pnl': realized,
+                    'current_price': current_price,
+                    'valuation_method': valuation_method,
+                    'valuation_status': valuation_status,
+                    'approved_value': approved_value,
+                    'unrealized_pct': unrealized_pct,
+                    'alert': alert,
+                }
+            )
 
         return results
 
     def cash_balance(self, account: Optional[str] = None) -> Decimal:
-        """
-        Return cash balance using __USD_CASH__ asset total_usd sum.
-        """
         conn = self.db.connect()
         cursor = conn.cursor()
         usd = self.resolver.get_or_create_usd_cash()
         if account:
             cursor.execute(
                 "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ? AND account_id = (SELECT id FROM accounts WHERE name = ?)",
-                (usd['id'], account)
+                (usd['id'], account),
             )
         else:
             cursor.execute(
                 "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ?",
-                (usd['id'],)
+                (usd['id'],),
             )
         res = cursor.fetchone()[0]
         return Decimal(str(res)) if res is not None else Decimal('0')
 
     def summary(self, account: Optional[str] = None) -> dict:
-        """
-        Return summary dict: total_cost_basis, total_realized_pnl, cash_balance,
-        total_market_value (usable prices only), total_unrealized_pnl, unrealized_return_pct,
-        price_quality_counts
-        """
         positions = self.positions(account)
         total_cost_basis = Decimal('0')
         total_realized = Decimal('0')
-        total_market_value = Decimal('0')
-        total_unrealized_pnl = Decimal('0')
+        total_equity = Decimal('0')
+        market_covered_value = Decimal('0')
+        non_market_valued = Decimal('0')
+        valued_cost_basis = Decimal('0')
+        unvalued_excluded_cost_basis = Decimal('0')
+        unvalued_positions = 0
         price_quality_counts = {'usable': 0, 'stale': 0, 'unavailable': 0}
-        
+
         for p in positions:
             total_cost_basis += p['cost_basis']
             total_realized += p['realized_pnl']
-            
-            asset = self.resolver.resolve(p['symbol'])
-            quality = self._classify_price_quality(asset['id'])
-            price_quality_counts[quality] += 1
-            
-            if quality == 'usable' and p['current_price'] and p['qty_open'] > 0:
-                market_value = p['qty_open'] * p['current_price']
-                total_market_value += market_value
-                unrealized_pnl = market_value - p['cost_basis']
-                total_unrealized_pnl += unrealized_pnl
-        
+
+            if p['valuation_method'] == 'market_live':
+                price_quality_counts[p['valuation_status']] += 1
+
+            if p['approved_value'] is not None and p['qty_open'] > 0:
+                total_equity += p['approved_value']
+                valued_cost_basis += p['cost_basis']
+                if p['valuation_method'] == 'market_live':
+                    market_covered_value += p['approved_value']
+                else:
+                    non_market_valued += p['approved_value']
+            elif p['qty_open'] > 0:
+                unvalued_excluded_cost_basis += p['cost_basis']
+                unvalued_positions += 1
+
         cash = self.cash_balance(account)
-        
+        total_unrealized_pnl = total_equity - valued_cost_basis
         unrealized_return_pct = None
-        if total_cost_basis > 0:
-            unrealized_return_pct = ((total_unrealized_pnl / total_cost_basis) * 100).quantize(Decimal('0.01'))
-        
+        if valued_cost_basis > 0:
+            unrealized_return_pct = ((total_unrealized_pnl / valued_cost_basis) * 100).quantize(Decimal('0.01'))
+
         return {
             'total_cost_basis': total_cost_basis,
             'total_realized_pnl': total_realized,
             'cash_balance': cash,
-            'total_market_value': total_market_value,
+            'total_equity': total_equity,
+            'market_covered_value': market_covered_value,
+            'non_market_valued': non_market_valued,
+            'unvalued_excluded_cost_basis': unvalued_excluded_cost_basis,
+            'unvalued_positions': unvalued_positions,
+            'valued_cost_basis': valued_cost_basis,
+            'total_market_value': market_covered_value,
             'total_unrealized_pnl': total_unrealized_pnl,
             'unrealized_return_pct': unrealized_return_pct,
             'price_quality_counts': price_quality_counts,
         }
+
+

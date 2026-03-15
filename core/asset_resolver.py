@@ -119,6 +119,15 @@ class AssetResolver:
         '__USD_CASH__': 'cash',
     }
     
+    VALUATION_METHOD_OVERRIDES = {
+        'BBVA CDT': 'contractual_value',
+        'FONDO DINAMICO': 'snapshot_imported',
+        '__USD_CASH__': 'unvalued',
+    }
+
+    MARKET_LIVE_TYPES = {'crypto', 'stablecoin', 'stock_us', 'commodity', 'stock_intl'}
+    INACTIVE_SYMBOLS = {'BAS', 'SWTCH'}
+
     # TradingView and exchange mappings (optional)
     TRADINGVIEW_MAP = {
         'BTC': ('BTCUSDT', 'BINANCE'),
@@ -181,7 +190,9 @@ class AssetResolver:
             tradingview_symbol=tv_symbol,
             exchange=exchange,
             currency='USD',
-            divisor=1.0
+            divisor=1.0,
+            valuation_method=self._default_valuation_method(symbol_resolved, asset_type),
+            is_active=self._default_is_active(symbol_resolved),
         )
     
     def get_asset(self, symbol: str) -> Dict:
@@ -291,9 +302,21 @@ class AssetResolver:
             'exchange': row['exchange'],
             'currency': row['currency'],
             'divisor': row['divisor'],
+            'valuation_method': row['valuation_method'],
             'is_active': row['is_active'],
         }
     
+    def _default_valuation_method(self, symbol: str, asset_type: str) -> str:
+        override = self.VALUATION_METHOD_OVERRIDES.get(symbol)
+        if override:
+            return override
+        if asset_type in self.MARKET_LIVE_TYPES:
+            return 'market_live'
+        return 'unvalued'
+
+    def _default_is_active(self, symbol: str) -> int:
+        return 0 if symbol in self.INACTIVE_SYMBOLS else 1
+
     def _create_asset(
         self,
         symbol: str,
@@ -301,7 +324,9 @@ class AssetResolver:
         tradingview_symbol: Optional[str] = None,
         exchange: Optional[str] = None,
         currency: str = 'USD',
-        divisor: float = 1.0
+        divisor: float = 1.0,
+        valuation_method: str = 'unvalued',
+        is_active: int = 1
     ) -> Dict:
         """
         Create new asset in database.
@@ -324,10 +349,10 @@ class AssetResolver:
             cursor = self.db.execute(
                 """
                 INSERT INTO assets 
-                (symbol, asset_type, tradingview_symbol, exchange, currency, divisor)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (symbol, asset_type, tradingview_symbol, exchange, currency, divisor, valuation_method, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (symbol, asset_type, tradingview_symbol, exchange, currency, divisor)
+                (symbol, asset_type, tradingview_symbol, exchange, currency, divisor, valuation_method, is_active)
             )
             # commit should be done by caller, not here
             

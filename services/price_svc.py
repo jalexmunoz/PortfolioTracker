@@ -1,6 +1,7 @@
-﻿"""Price refresh service with explicit provider mappings."""
+"""Price refresh service with explicit provider mappings."""
 
 import os
+import time
 import re
 from dataclasses import dataclass
 
@@ -10,6 +11,8 @@ from portfolio_tracker_v2 import config
 from portfolio_tracker_v2.core import Database
 
 COINGECKO_SUPPORTED_TYPES = {"crypto", "stablecoin"}
+TRADINGVIEW_RETRY_ATTEMPTS = 3
+TRADINGVIEW_RETRY_DELAY_SECONDS = 0.5
 
 # Explicit and centralized symbol -> provider id mapping.
 COINGECKO_SYMBOL_MAP = {
@@ -34,9 +37,14 @@ ALPHA_VANTAGE_STOCK_OVERRIDES = {
     "BRKB": "BRK.B",
 }
 
-ALPHA_VANTAGE_COMMODITY_MAP = {
-    "GOLD": "XAU",
-    "SILVER": "XAG",
+TRADINGVIEW_COMMODITY_MAP = {
+    "GOLD": {"tradingview_symbol": "GOLD", "exchange": "TVC", "currency": "USD", "divisor": 1.0},
+    "SILVER": {"tradingview_symbol": "SILVER", "exchange": "TVC", "currency": "USD", "divisor": 1.0},
+}
+
+TRADINGVIEW_STOCK_INTL_MAP = {
+    "ECOPETROL": {"tradingview_symbol": "ECOPETROL", "exchange": "BVC", "currency": "COP", "divisor": 1.0},
+    "PEI": {"tradingview_symbol": "PEI", "exchange": "BVC", "currency": "COP", "divisor": 1.0},
 }
 
 
@@ -63,12 +71,16 @@ class RefreshReport:
     updated: int = 0
     skipped_unmapped: int = 0
     skipped_unsupported: int = 0
-    failed_lookup: int = 0
+    failed_final: int = 0
     results: list[AssetRefreshResult] | None = None
 
     @property
     def skipped_total(self) -> int:
         return self.skipped_unmapped + self.skipped_unsupported
+
+    @property
+    def failed_lookup(self) -> int:
+        return self.failed_final
 
     def __post_init__(self) -> None:
         if self.results is None:
@@ -82,6 +94,9 @@ class ProviderResolution:
     provider_symbol: str | None = None
     price_source: str | None = None
     reason: str | None = None
+    exchange: str | None = None
+    currency: str | None = None
+    divisor: float = 1.0
 
 
 def refresh_prices(db: Database) -> RefreshReport:
@@ -89,7 +104,27 @@ def refresh_prices(db: Database) -> RefreshReport:
     conn = db.connect()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT id, symbol, asset_type FROM assets WHERE is_active = 1")
+    cursor.execute(
+        """
+        SELECT a.id, a.symbol, a.asset_type
+        FROM assets a
+        WHERE a.is_active = 1
+          AND COALESCE(a.valuation_method, 'market_live') = 'market_live'
+          AND (
+                COALESCE(
+                    (SELECT SUM(t.quantity) FROM transactions t
+                     WHERE t.asset_id = a.id AND t.tx_type IN ('BUY', 'MIGRATION_BUY')),
+                    0
+                )
+                -
+                COALESCE(
+                    (SELECT SUM(t.quantity) FROM transactions t
+                     WHERE t.asset_id = a.id AND t.tx_type = 'SELL'),
+                    0
+                )
+              ) > 0
+        """
+    )
     assets = cursor.fetchall()
 
     report = RefreshReport()
@@ -129,6 +164,7 @@ def refresh_prices(db: Database) -> RefreshReport:
             )
             continue
 
+        persist_asset_market_metadata(cursor, asset_id, resolution)
         lookup = lookup_price(resolution)
         if lookup.status == "ok":
             cursor.execute(
@@ -164,13 +200,13 @@ def refresh_prices(db: Database) -> RefreshReport:
             )
             continue
 
-        report.failed_lookup += 1
+        report.failed_final += 1
         report.results.append(
             AssetRefreshResult(
                 asset_id=asset_id,
                 symbol=symbol_upper,
                 asset_type=asset_type_lower,
-                status="failed_lookup",
+                status="failed_final",
                 reason=lookup.reason or "lookup_failed",
                 provider=resolution.provider,
                 provider_symbol=resolution.provider_symbol,
@@ -206,14 +242,35 @@ def resolve_provider(symbol: str, asset_type: str) -> ProviderResolution:
         )
 
     if asset_type == "commodity":
-        commodity_symbol = ALPHA_VANTAGE_COMMODITY_MAP.get(symbol)
-        if not commodity_symbol:
-            return ProviderResolution(status="unmapped", provider="alpha_vantage", reason="unmapped_symbol")
+        commodity_metadata = TRADINGVIEW_COMMODITY_MAP.get(symbol)
+        if not commodity_metadata:
+            return ProviderResolution(status="unmapped", provider="tradingview", reason="unmapped_symbol")
         return ProviderResolution(
             status="ok",
-            provider="alpha_vantage",
-            provider_symbol=commodity_symbol,
-            price_source="alpha_vantage_gold_silver_spot",
+            provider="tradingview",
+            provider_symbol=commodity_metadata["tradingview_symbol"],
+            price_source="tradingview_tvc_spot",
+            exchange=commodity_metadata["exchange"],
+            currency=commodity_metadata["currency"],
+            divisor=float(commodity_metadata["divisor"]),
+        )
+
+    if asset_type == "stock_intl":
+        intl_metadata = TRADINGVIEW_STOCK_INTL_MAP.get(symbol)
+        if not intl_metadata:
+            return ProviderResolution(
+                status="unsupported",
+                provider="tradingview",
+                reason="unsupported_asset_type:stock_intl",
+            )
+        return ProviderResolution(
+            status="ok",
+            provider="tradingview",
+            provider_symbol=intl_metadata["tradingview_symbol"],
+            price_source="tradingview_bvc_fx",
+            exchange=intl_metadata["exchange"],
+            currency=intl_metadata["currency"],
+            divisor=float(intl_metadata["divisor"]),
         )
 
     return ProviderResolution(
@@ -237,10 +294,37 @@ def lookup_price(resolution: ProviderResolution) -> PriceLookupResult:
     if resolution.provider == "alpha_vantage" and resolution.price_source == "alpha_vantage_global_quote":
         return get_alpha_vantage_stock_price(resolution.provider_symbol or "")
 
-    if resolution.provider == "alpha_vantage" and resolution.price_source == "alpha_vantage_gold_silver_spot":
-        return get_alpha_vantage_gold_silver_price(resolution.provider_symbol or "")
+    if resolution.provider == "tradingview" and resolution.price_source == "tradingview_tvc_spot":
+        return get_tradingview_commodity_price(resolution)
+
+    if resolution.provider == "tradingview" and resolution.price_source == "tradingview_bvc_fx":
+        return get_tradingview_stock_intl_price(resolution)
 
     return PriceLookupResult(status="failed", reason="unsupported_provider")
+
+
+def persist_asset_market_metadata(cursor, asset_id: int, resolution: ProviderResolution) -> None:
+    """Persist deterministic market metadata separately from price timestamps."""
+    if not resolution.provider_symbol and not resolution.exchange and not resolution.currency:
+        return
+
+    cursor.execute(
+        """
+        UPDATE assets
+        SET tradingview_symbol = COALESCE(?, tradingview_symbol),
+            exchange = COALESCE(?, exchange),
+            currency = COALESCE(?, currency),
+            divisor = ?
+        WHERE id = ?
+        """,
+        (
+            resolution.provider_symbol,
+            resolution.exchange,
+            resolution.currency,
+            resolution.divisor,
+            asset_id,
+        ),
+    )
 
 
 def get_alpha_vantage_api_key() -> str | None:
@@ -315,6 +399,76 @@ def get_alpha_vantage_gold_silver_price(from_currency: str) -> PriceLookupResult
         return PriceLookupResult(status="unsupported", reason="provider_no_price")
 
 
+def get_tradingview_stock_intl_price(resolution: ProviderResolution) -> PriceLookupResult:
+    """Fetch local TradingView close and convert to USD using live FX."""
+    provider_symbol = resolution.provider_symbol or ""
+    exchange = resolution.exchange or ""
+    currency = resolution.currency or "USD"
+
+    try:
+        local_price = get_tradingview_latest_close(provider_symbol, exchange)
+        if local_price is None:
+            return PriceLookupResult(status="unsupported", reason="provider_no_price")
+
+        divisor = resolution.divisor or 1.0
+        if divisor != 1.0:
+            local_price = local_price / divisor
+
+        if currency == "USD":
+            return PriceLookupResult(status="ok", price=float(local_price))
+
+        fx_rate = get_usd_base_exchange_rate(currency)
+        if fx_rate is None or fx_rate <= 0:
+            return PriceLookupResult(status="unsupported", reason="provider_no_price")
+
+        return PriceLookupResult(status="ok", price=float(local_price / fx_rate))
+    except ImportError:
+        return PriceLookupResult(status="unsupported", reason="provider_not_configured:tradingview")
+    except Exception:
+        return PriceLookupResult(status="failed", reason="request_exception")
+
+
+def get_tradingview_commodity_price(resolution: ProviderResolution) -> PriceLookupResult:
+    provider_symbol = resolution.provider_symbol or ""
+    exchange = resolution.exchange or ""
+
+    try:
+        local_price = get_tradingview_latest_close(provider_symbol, exchange)
+        if local_price is None:
+            return PriceLookupResult(status="unsupported", reason="provider_no_price")
+
+        divisor = resolution.divisor or 1.0
+        if divisor != 1.0:
+            local_price = local_price / divisor
+
+        return PriceLookupResult(status="ok", price=float(local_price))
+    except ImportError:
+        return PriceLookupResult(status="unsupported", reason="provider_not_configured:tradingview")
+    except Exception:
+        return PriceLookupResult(status="failed", reason="request_exception")
+
+
+def get_tradingview_latest_close(symbol: str, exchange: str) -> float | None:
+    """Fetch the latest TradingView close from the v2 TradingView shim."""
+    from portfolio_tracker_v2.services.tradingview_fetcher import get_tradingview_ohlc
+
+    for attempt in range(1, TRADINGVIEW_RETRY_ATTEMPTS + 1):
+        df = get_tradingview_ohlc(symbol=symbol, exchange=exchange, n_bars=1)
+        if df is not None and not df.empty:
+            close_value = df["close"].iloc[-1]
+            return float(close_value) if close_value is not None else None
+        if attempt < TRADINGVIEW_RETRY_ATTEMPTS:
+            time.sleep(TRADINGVIEW_RETRY_DELAY_SECONDS)
+    return None
+
+
+def get_usd_base_exchange_rate(currency: str) -> float | None:
+    """Return TradingView FX quote in legacy format: units of currency per 1 USD."""
+    if currency == "USD":
+        return 1.0
+    return get_tradingview_latest_close(f"USD{currency}", "FX_IDC")
+
+
 def get_coingecko_price_by_id(coin_id: str) -> PriceLookupResult:
     """Fetch USD price by CoinGecko coin id."""
     try:
@@ -340,3 +494,4 @@ def get_crypto_price(symbol: str) -> float | None:
     if lookup.status != "ok":
         return None
     return lookup.price
+

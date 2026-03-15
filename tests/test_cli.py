@@ -45,6 +45,8 @@ def test_init_db_and_transactions(tmp_path, monkeypatch):
     result = runner.invoke(main, ["positions"], env=env)
     assert "BTC" in result.output
     assert "1" in result.output
+    assert "Val Method" in result.output
+    assert "Val Status" in result.output
 
     # sell partial and check pnl
     run_cmd(runner, ["sell", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "2000"], env)
@@ -91,12 +93,12 @@ def test_refresh_prices(tmp_path, monkeypatch):
             updated=1,
             skipped_unsupported=2,
             skipped_unmapped=3,
-            failed_lookup=4,
+            failed_final=4,
         )
         result = runner.invoke(main, ["refresh-prices"], env=env)
 
     assert result.exit_code == 0
-    assert "Prices refreshed: 1 updated, 2 skipped unsupported, 3 skipped unmapped, 4 failed lookup" in result.output
+    assert "Prices refreshed: 1 updated, 2 skipped unsupported, 3 skipped unmapped, 4 failed final" in result.output
 
 
 def test_summary_with_valuation(tmp_path, monkeypatch):
@@ -133,7 +135,10 @@ def test_summary_with_valuation(tmp_path, monkeypatch):
     result = runner.invoke(main, ["summary"], env=env)
     assert result.exit_code == 0
     assert "Total cost basis: 100.00" in result.output
-    assert "Total market value (usable prices): 200.00" in result.output
-    assert "Total unrealized PnL (usable prices): 100.00" in result.output
-    assert "Unrealized return %: 100.00%" in result.output
-    assert "Price quality: 1 usable" in result.output
+    assert "Total Equity: 200.00" in result.output
+    assert "Market-Covered Value: 200.00" in result.output
+    assert "Non-Market Valued: 0.00" in result.output
+    assert "Unvalued / Excluded (cost basis): 0.00" in result.output
+    assert "Total unrealized PnL (approved valuations): 100.00" in result.output
+    assert "Unrealized return % (approved valuations): 100.00%" in result.output
+    assert "Market price quality: 1 usable" in result.output
