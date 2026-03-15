@@ -11,6 +11,8 @@ from portfolio_tracker_v2 import config
 from portfolio_tracker_v2.core import Database
 
 COINGECKO_SUPPORTED_TYPES = {"crypto", "stablecoin"}
+COINGECKO_RETRY_ATTEMPTS = 3
+COINGECKO_RETRY_BASE_DELAY_SECONDS = 0.4
 TRADINGVIEW_RETRY_ATTEMPTS = 3
 TRADINGVIEW_RETRY_DELAY_SECONDS = 0.5
 
@@ -470,19 +472,40 @@ def get_usd_base_exchange_rate(currency: str) -> float | None:
 
 
 def get_coingecko_price_by_id(coin_id: str) -> PriceLookupResult:
-    """Fetch USD price by CoinGecko coin id."""
-    try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return PriceLookupResult(status="failed", reason=f"http_{response.status_code}")
-        data = response.json()
-        usd_price = data.get(coin_id, {}).get("usd")
-        if usd_price is None:
-            return PriceLookupResult(status="unsupported", reason="provider_no_price")
-        return PriceLookupResult(status="ok", price=float(usd_price))
-    except Exception:
-        return PriceLookupResult(status="failed", reason="request_exception")
+    """Fetch USD price by CoinGecko coin id with minimal retry for transient failures."""
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd"
+
+    for attempt in range(1, COINGECKO_RETRY_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, timeout=10)
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if attempt < COINGECKO_RETRY_ATTEMPTS:
+                time.sleep(COINGECKO_RETRY_BASE_DELAY_SECONDS * attempt)
+                continue
+            return PriceLookupResult(status="failed", reason="request_exception")
+        except requests.exceptions.RequestException:
+            return PriceLookupResult(status="failed", reason="request_exception")
+        except Exception:
+            return PriceLookupResult(status="failed", reason="request_exception")
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError:
+                return PriceLookupResult(status="failed", reason="request_exception")
+            usd_price = data.get(coin_id, {}).get("usd")
+            if usd_price is None:
+                return PriceLookupResult(status="unsupported", reason="provider_no_price")
+            return PriceLookupResult(status="ok", price=float(usd_price))
+
+        should_retry = response.status_code == 429 or response.status_code >= 500
+        if should_retry and attempt < COINGECKO_RETRY_ATTEMPTS:
+            time.sleep(COINGECKO_RETRY_BASE_DELAY_SECONDS * attempt)
+            continue
+
+        return PriceLookupResult(status="failed", reason=f"http_{response.status_code}")
+
+    return PriceLookupResult(status="failed", reason="request_exception")
 
 
 def get_crypto_price(symbol: str) -> float | None:

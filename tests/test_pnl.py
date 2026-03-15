@@ -500,6 +500,10 @@ def test_summary_with_valuation(services):
     assert s['total_unrealized_pnl'] == Decimal('100')
     assert s['unrealized_return_pct'] == Decimal('100.00')
     assert s['price_quality_counts'] == {'usable': 1, 'stale': 1, 'unavailable': 1}
+    assert s['asset_class_breakdown']['Crypto'] == Decimal('200')
+    assert s['asset_class_breakdown']['Equities'] == Decimal('0')
+    assert s['asset_class_breakdown']['Metals'] == Decimal('0')
+    assert s['asset_class_breakdown']['Non-market'] == Decimal('0')
 
 
 def test_price_quality_classification(services):
@@ -561,6 +565,10 @@ def test_summary_hybrid_valuation_methods(services):
     assert summary['non_market_valued'] == Decimal('200')
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
     assert summary['unvalued_positions'] == 0
+    assert summary['asset_class_breakdown']['Non-market'] == Decimal('200')
+    assert summary['asset_class_breakdown']['Crypto'] == Decimal('0')
+    assert summary['asset_class_breakdown']['Equities'] == Decimal('0')
+    assert summary['asset_class_breakdown']['Metals'] == Decimal('0')
 
 
 def test_positions_and_summary_exclude_inactive_assets(services):
@@ -587,3 +595,4 @@ def test_positions_and_summary_exclude_inactive_assets(services):
     assert summary['total_cost_basis'] == Decimal('100')
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
     assert summary['total_equity'] == Decimal('200')
+    assert sum(summary['asset_class_breakdown'].values()) == summary['total_equity']

@@ -51,6 +51,20 @@ class PnLService:
             return 'usable_non_market' if current_price is not None else 'unavailable'
         return 'unvalued'
 
+    def _classify_asset_class(self, asset_type: str, symbol: str, valuation_method: str) -> str:
+        if valuation_method in self.APPROVED_NON_MARKET_METHODS:
+            return 'Non-market'
+
+        asset_type_lower = (asset_type or '').lower()
+        if asset_type_lower in {'crypto', 'stablecoin'}:
+            return 'Crypto'
+        if asset_type_lower == 'commodity' or symbol in {'GOLD', 'SILVER'}:
+            return 'Metals'
+        if asset_type_lower in {'stock_us', 'stock_intl'}:
+            return 'Equities'
+
+        return 'Equities'
+
     def _get_non_market_approved_price(self, asset_id: int, account: Optional[str]) -> Decimal | None:
         """Fallback approved valuation for non-market assets from latest buy-side unit price."""
         conn = self.db.connect()
@@ -267,6 +281,7 @@ class PnLService:
             results.append(
                 {
                     'symbol': sym,
+                    'asset_type': asset.get('asset_type', ''),
                     'account': acct,
                     'qty_open': qty_open,
                     'cost_basis': cost_basis,
@@ -311,6 +326,12 @@ class PnLService:
         unvalued_excluded_cost_basis = Decimal('0')
         unvalued_positions = 0
         price_quality_counts = {'usable': 0, 'stale': 0, 'unavailable': 0}
+        asset_class_breakdown = {
+            'Crypto': Decimal('0'),
+            'Equities': Decimal('0'),
+            'Metals': Decimal('0'),
+            'Non-market': Decimal('0'),
+        }
 
         for p in positions:
             total_cost_basis += p['cost_basis']
@@ -326,6 +347,13 @@ class PnLService:
                     market_covered_value += p['approved_value']
                 else:
                     non_market_valued += p['approved_value']
+
+                asset_class = self._classify_asset_class(
+                    p.get('asset_type', ''),
+                    p['symbol'],
+                    p['valuation_method'],
+                )
+                asset_class_breakdown[asset_class] += p['approved_value']
             elif p['qty_open'] > 0:
                 unvalued_excluded_cost_basis += p['cost_basis']
                 unvalued_positions += 1
@@ -350,6 +378,7 @@ class PnLService:
             'total_unrealized_pnl': total_unrealized_pnl,
             'unrealized_return_pct': unrealized_return_pct,
             'price_quality_counts': price_quality_counts,
+            'asset_class_breakdown': asset_class_breakdown,
         }
 
 

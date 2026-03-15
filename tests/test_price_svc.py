@@ -204,6 +204,52 @@ def test_refresh_prices_crypto_stays_coingecko(db):
     assert row[2] is not None
 
 
+def test_refresh_prices_coingecko_retries_429_then_updates(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    add_active_holding(db, 'BTC', 'crypto')
+    conn.commit()
+
+    with patch("portfolio_tracker_v2.services.price_svc.requests.get") as mock_get:
+        with patch("portfolio_tracker_v2.services.price_svc.time.sleep") as mock_sleep:
+            r429 = MagicMock()
+            r429.status_code = 429
+            ok = MagicMock()
+            ok.status_code = 200
+            ok.json.return_value = {"bitcoin": {"usd": 60123.0}}
+            mock_get.side_effect = [r429, ok]
+
+            report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].status == "updated"
+    assert mock_get.call_count == 2
+    mock_sleep.assert_called_once()
+
+
+def test_refresh_prices_coingecko_429_persistent_is_failed_final(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    add_active_holding(db, 'BTC', 'crypto')
+    conn.commit()
+
+    with patch("portfolio_tracker_v2.services.price_svc.requests.get") as mock_get:
+        with patch("portfolio_tracker_v2.services.price_svc.time.sleep") as mock_sleep:
+            r429 = MagicMock()
+            r429.status_code = 429
+            mock_get.side_effect = [r429, r429, r429]
+
+            report = refresh_prices(db)
+
+    assert report.updated == 0
+    assert report.failed_final == 1
+    assert report.results[0].status == "failed_final"
+    assert report.results[0].reason == "http_429"
+    assert mock_get.call_count == 3
+    assert mock_sleep.call_count == 2
+
+
 def test_refresh_prices_stock_us_alpha_vantage_success(db, monkeypatch):
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "demo-key")
 
