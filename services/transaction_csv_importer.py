@@ -131,8 +131,8 @@ class TransactionCsvImporter:
 
         if quantity <= 0:
             return None, "quantity must be > 0"
-        if unit_price < 0:
-            return None, "unit_price must be >= 0"
+        if unit_price <= 0:
+            return None, "unit_price must be > 0"
         if fee < 0:
             return None, "fee must be >= 0"
 

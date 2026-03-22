@@ -51,9 +51,8 @@ def main():
         print("\n✅ Database initialization complete!")
         print(f"   DB path: {DB_PATH}")
         print("\nNext steps:")
-        print("   1. Prepare your legacy CSV file (e.g., portfoliototal.csv)")
-        print("   2. Run: python -m portfolio_tracker_v2 import-csv --input <PATH_TO_CSV>")
-        print("   3. If dry-run looks good, run: python -m portfolio_tracker_v2 import-csv --input <PATH_TO_CSV> --execute")
+        print("   1. Prepare your transactions CSV file with ledger rows")
+        print("   2. Run: python -m portfolio_tracker_v2 import-transactions-csv <PATH_TO_CSV>")
         
     except Exception as e:
         print(f"\n❌ Error: {e}")

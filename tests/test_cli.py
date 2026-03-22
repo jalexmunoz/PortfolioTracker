@@ -88,6 +88,8 @@ def test_summary_and_positions_empty_db(tmp_path, monkeypatch):
     # init-db
     result = runner.invoke(main, ["init-db"], env=env)
     assert result.exit_code == 0
+    assert "import-transactions-csv" in result.output
+    assert "import-csv --input" not in result.output
 
     # positions on empty DB
     result = runner.invoke(main, ["positions"], env=env)
@@ -290,6 +292,34 @@ def test_import_transactions_csv_missing_required_column_returns_exit_2(tmp_path
     assert result.exit_code == 2
     assert "ERROR: missing required columns: account" in result.output
 
+
+def test_import_transactions_csv_rejects_zero_unit_price_and_continues(tmp_path, monkeypatch):
+    db_file = tmp_path / "import_zero_unit_price.db"
+    csv_path = tmp_path / "transactions.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """trade_date,account,symbol,side,quantity,unit_price
+2026-03-20,Main,BTC,BUY,1,0
+2026-03-21,Main,BTC,BUY,2,100
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["import-transactions-csv", str(csv_path)], env=env)
+
+    assert result.exit_code == 0
+    assert "Rows processed: 2" in result.output
+    assert "Imported OK: 1" in result.output
+    assert "Rejected: 1" in result.output
+    assert "row 2: unit_price must be > 0" in result.output
+
+    positions = runner.invoke(main, ["positions"], env=env)
+    assert positions.exit_code == 0
+    assert "BTC" in positions.output
+    assert "2" in positions.output
 
 def test_import_transactions_csv_skips_invalid_rows_and_summarizes(tmp_path, monkeypatch):
     db_file = tmp_path / "import_mixed_rows.db"
