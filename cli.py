@@ -30,6 +30,7 @@ DEFAULT_UNVALUED_INCREASE_THRESHOLD = 0.0
 DEFAULT_ASSET_CLASS_SHIFT_PCT = 5.0
 DEFAULT_KEEP_LAST_SUMMARY_SNAPSHOTS = 10
 DEFAULT_LATEST_DAILY_REPORT_PATH = os.path.join("output", "reports", "daily_report_latest.json")
+DEFAULT_DAILY_REPORT_TOP_POSITIONS = 5
 SUMMARY_HISTORY_SNAPSHOT_RE = re.compile(r'^summary_\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.json$')
 # helpers
 
@@ -186,6 +187,12 @@ def _format_optional_money(value) -> str:
     return format_money(Decimal(str(value)))
 
 
+def _format_optional_pct(value) -> str:
+    if value is None:
+        return "N/A"
+    return f"{Decimal(str(value)):.2f}%"
+
+
 def _render_daily_report_summary(payload: dict) -> None:
     summary = payload.get("summary_result", {}) or {}
     alerts = payload.get("alerts_result") or {}
@@ -201,6 +208,56 @@ def _render_daily_report_summary(payload: dict) -> None:
     click.echo(f"Market-Covered Value: {_format_optional_money(summary.get('market_covered_value'))}")
     click.echo(f"Non-Market Valued: {_format_optional_money(summary.get('non_market_valued'))}")
     click.echo(f"Unvalued / Excluded (cost basis): {_format_optional_money(summary.get('unvalued_excluded_cost_basis'))}")
+
+
+def _print_daily_report_block(run_timestamp: str, summary: dict, positions: list[dict]) -> None:
+    counts = summary['price_quality_counts']
+    click.echo(f"Timestamp: {run_timestamp}")
+    click.echo(f"Total Equity: {format_money(summary['total_equity'])}")
+    click.echo(f"Cash balance: {format_money(summary['cash_balance'])}")
+    click.echo(f"Total market value: {format_money(summary['total_market_value'])}")
+    click.echo(f"Realized PnL: {format_money(summary['total_realized_pnl'])}")
+    click.echo(f"Unrealized PnL: {format_money(summary['total_unrealized_pnl'])}")
+    click.echo(f"Unrealized return %: {_format_optional_pct(summary['unrealized_return_pct'])}")
+    click.echo(
+        "Price quality: "
+        f"{counts['usable']} usable, {counts['stale']} stale, {counts['unavailable']} unavailable"
+    )
+
+    top_positions = sorted(
+        (p for p in positions if p['qty_open'] > 0),
+        key=lambda p: (p['approved_value'] is not None, p['approved_value'] or Decimal('0')),
+        reverse=True,
+    )[:DEFAULT_DAILY_REPORT_TOP_POSITIONS]
+
+    click.echo("Top positions by market value")
+    if top_positions:
+        rows = []
+        for position in top_positions:
+            rows.append(
+                (
+                    position['symbol'],
+                    position['account'] or '(all)',
+                    format_qty(position['qty_open']),
+                    _format_optional_money(position['approved_value']),
+                    position['valuation_status'],
+                )
+            )
+        display_table(["Symbol", "Account", "Qty", "Market Value", "Price Quality"], rows)
+    else:
+        click.echo("No open positions found.")
+
+    warnings = []
+    if counts['stale']:
+        warnings.append(f"{counts['stale']} position(s) have stale prices")
+    if counts['unavailable']:
+        warnings.append(f"{counts['unavailable']} position(s) have unavailable prices")
+
+    if warnings:
+        click.echo("Warnings")
+        for warning in warnings:
+            click.echo(f"- {warning}")
+
 
 def _print_summary_block(summary: dict) -> None:
     click.echo(f"Total cost basis: {format_money(summary['total_cost_basis'])}")
@@ -898,6 +955,7 @@ def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output
         alerts_result = None
         final_exit_code = 0
         output_payload = None
+        run_timestamp = datetime.now(timezone.utc).isoformat()
 
         output_context = contextlib.nullcontext()
         if stdout_json_mode:
@@ -945,11 +1003,12 @@ def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output
                 _render_refresh_report(db, report, refresh_verbose)
 
             click.echo('Summary')
+            positions = svc.positions(account)
             summary = svc.summary(account)
             if summary['total_cost_basis'] == 0 and summary['total_realized_pnl'] == 0 and summary['cash_balance'] == 0:
                 click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
             else:
-                _print_summary_block(summary)
+                _print_daily_report_block(run_timestamp, summary, positions)
 
             payload = _build_summary_export_payload(summary)
             history_path = _write_summary_history_export(history_dir, payload)
@@ -980,7 +1039,7 @@ def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output
             output_payload = {
                 "report_type": "daily-report",
                 "report_schema_version": 1,
-                "run_timestamp": datetime.now(timezone.utc).isoformat(),
+                "run_timestamp": run_timestamp,
                 "account": account,
                 "history_dir": history_dir,
                 "skip_refresh": skip_refresh,
@@ -1023,6 +1082,7 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
+
 
 
 

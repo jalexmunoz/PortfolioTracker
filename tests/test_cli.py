@@ -1060,6 +1060,17 @@ def test_daily_report_without_previous_snapshot(tmp_path, monkeypatch):
     assert "Daily Report" in result.output
     assert "Refresh" in result.output
     assert "Summary" in result.output
+    assert "Timestamp:" in result.output
+    assert "Total Equity: 200.00" in result.output
+    assert "Cash balance: 0.00" in result.output
+    assert "Total market value: 200.00" in result.output
+    assert "Realized PnL: 0.00" in result.output
+    assert "Unrealized PnL: 100.00" in result.output
+    assert "Unrealized return %: 100.00%" in result.output
+    assert "Price quality: 1 usable, 0 stale, 0 unavailable" in result.output
+    assert "Top positions by market value" in result.output
+    assert "Market Value" in result.output
+    assert "BTC" in result.output
     assert "Summary history snapshot exported to" in result.output
     assert "No previous history snapshot found; skipping compare and alerts." in result.output
     assert len(list(history_dir.glob("summary_*.json"))) == 1
@@ -1146,6 +1157,52 @@ def test_daily_report_skip_refresh(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "Refresh skipped (--skip-refresh)" in result.output
+    mock_refresh.assert_not_called()
+
+
+def test_daily_report_shows_stale_and_unavailable_price_warnings(tmp_path, monkeypatch):
+    db_file = tmp_path / "daily_price_quality.db"
+    history_dir = tmp_path / "history"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["buy", "--symbol", "ETH", "--account", "Main", "--qty", "2", "--price", "50"], env)
+
+    from datetime import datetime, timedelta
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    eth_asset = resolver.resolve("ETH")
+    stale_date = (datetime.now() - timedelta(days=8)).isoformat()
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", stale_date, btc_asset["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = NULL, price_source = NULL, price_updated_at = NULL WHERE id = ?",
+        (eth_asset["id"],),
+    )
+    conn.commit()
+
+    with patch("portfolio_tracker_v2.cli.refresh_prices") as mock_refresh:
+        result = runner.invoke(main, ["daily-report", "--skip-refresh", "--history-dir", str(history_dir)], env=env)
+
+    assert result.exit_code == 0
+    assert "Refresh skipped (--skip-refresh)" in result.output
+    assert "Price quality: 0 usable, 1 stale, 1 unavailable" in result.output
+    assert "Top positions by market value" in result.output
+    assert "BTC" in result.output
+    assert "ETH" in result.output
+    assert "Warnings" in result.output
+    assert "1 position(s) have stale prices" in result.output
+    assert "1 position(s) have unavailable prices" in result.output
     mock_refresh.assert_not_called()
 
 
