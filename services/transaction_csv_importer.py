@@ -1,4 +1,4 @@
-﻿"""
+"""
 Minimal CSV transaction importer for BUY/SELL ledger entries.
 """
 from __future__ import annotations
@@ -36,6 +36,7 @@ class ImportTransactionsCsvResult:
     total_rows: int
     imported_rows: int
     rejected_rows: List[RejectedRow]
+    dry_run: bool = False
 
 
 @dataclass
@@ -60,7 +61,7 @@ class TransactionCsvImporter:
     def __init__(self, transaction_service: TransactionService):
         self.transaction_service = transaction_service
 
-    def import_file(self, csv_path: str) -> ImportTransactionsCsvResult:
+    def import_file(self, csv_path: str, dry_run: bool = False) -> ImportTransactionsCsvResult:
         path = Path(csv_path)
         if not path.exists():
             raise TransactionCsvImportError(f"file not found: {csv_path}")
@@ -100,6 +101,7 @@ class TransactionCsvImporter:
                     total_rows=total_rows,
                     imported_rows=imported_rows,
                     rejected_rows=rejected_rows,
+                    dry_run=dry_run,
                 )
         except TransactionCsvImportError:
             raise
@@ -210,3 +212,4 @@ class TransactionCsvImporter:
             return None
         text = str(value).strip()
         return text or None
+

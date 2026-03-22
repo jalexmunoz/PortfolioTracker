@@ -510,9 +510,12 @@ def _record_transaction_from_cli(side, symbol, account, qty, price, fee, tx_date
 
 def _render_transaction_csv_import_result(result):
     rejected_count = len(result.rejected_rows)
+    imported_label = "Would import OK" if result.dry_run else "Imported OK"
     click.echo(f"File read: {result.file_path}")
+    if result.dry_run:
+        click.echo("Dry run: no transactions persisted")
     click.echo(f"Rows processed: {result.total_rows}")
-    click.echo(f"Imported OK: {result.imported_rows}")
+    click.echo(f"{imported_label}: {result.imported_rows}")
     click.echo(f"Rejected: {rejected_count}")
     if not rejected_count:
         return
@@ -573,15 +576,30 @@ def cli_import_csv(input_path, execute):
 
 @main.command("import-transactions-csv")
 @click.argument("csv_path", type=click.Path(dir_okay=False))
-def cli_import_transactions_csv(csv_path):
+@click.option("--dry-run", is_flag=True, help="Validate and summarize without writing to the real database.")
+def cli_import_transactions_csv(csv_path, dry_run):
     """Import BUY/SELL ledger transactions from one explicit CSV format."""
     db = ensure_db()
-    resolver = AssetResolver(db)
-    svc = TransactionService(db, resolver)
-    importer = TransactionCsvImporter(svc)
+    importer = None
+    temp_db = None
+    temp_db_path = None
 
     try:
-        result = importer.import_file(csv_path)
+        if dry_run:
+            source_conn = db.connect()
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_file:
+                temp_db_path = tmp_file.name
+            temp_db = Database(temp_db_path)
+            source_conn.backup(temp_db.connect())
+            resolver = AssetResolver(temp_db)
+            svc = TransactionService(temp_db, resolver)
+            importer = TransactionCsvImporter(svc)
+        else:
+            resolver = AssetResolver(db)
+            svc = TransactionService(db, resolver)
+            importer = TransactionCsvImporter(svc)
+
+        result = importer.import_file(csv_path, dry_run=dry_run)
         _render_transaction_csv_import_result(result)
     except TransactionCsvImportError as exc:
         click.echo(f"ERROR: {exc}", err=True)
@@ -589,6 +607,11 @@ def cli_import_transactions_csv(csv_path):
     except Exception as exc:
         click.echo(f"ERROR: {exc}", err=True)
         raise click.exceptions.Exit(2)
+    finally:
+        if temp_db is not None:
+            temp_db.close()
+        if temp_db_path and os.path.exists(temp_db_path):
+            os.remove(temp_db_path)
 
 
 @main.command("add-transaction")
@@ -1000,6 +1023,7 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
+
 
 
 

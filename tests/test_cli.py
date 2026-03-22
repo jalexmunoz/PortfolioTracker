@@ -273,6 +273,60 @@ def test_import_transactions_csv_imports_buy_and_sell_through_normal_flow(tmp_pa
     assert "50" in pnl.output
 
 
+def test_import_transactions_csv_dry_run_valid_csv_shows_summary_and_keeps_db_unchanged(tmp_path, monkeypatch):
+    db_file = tmp_path / "import_dry_run_valid.db"
+    csv_path = tmp_path / "transactions.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """trade_date,account,symbol,side,quantity,unit_price
+2026-03-20,Main,BTC,BUY,2,100
+2026-03-21,Main,BTC,SELL,1,150
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["import-transactions-csv", str(csv_path), "--dry-run"], env=env)
+
+    assert result.exit_code == 0
+    assert "Dry run: no transactions persisted" in result.output
+    assert "Rows processed: 2" in result.output
+    assert "Would import OK: 2" in result.output
+    assert "Rejected: 0" in result.output
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT COUNT(1) FROM transactions")
+    assert cursor.fetchone()[0] == 0
+
+
+def test_import_transactions_csv_dry_run_invalid_csv_fails_and_persists_nothing(tmp_path, monkeypatch):
+    db_file = tmp_path / "import_dry_run_invalid.db"
+    csv_path = tmp_path / "transactions.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """trade_date,symbol,side,quantity,unit_price
+2026-03-20,BTC,BUY,1,100
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["import-transactions-csv", str(csv_path), "--dry-run"], env=env)
+
+    assert result.exit_code == 2
+    assert "ERROR: missing required columns: account" in result.output
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT COUNT(1) FROM transactions")
+    assert cursor.fetchone()[0] == 0
+
+
 def test_import_transactions_csv_missing_required_column_returns_exit_2(tmp_path, monkeypatch):
     db_file = tmp_path / "import_missing_column.db"
     csv_path = tmp_path / "transactions.csv"
@@ -1809,3 +1863,4 @@ def test_delete_transaction_nonexistent_id_returns_exit_2(tmp_path, monkeypatch)
     assert result.exit_code == 2
     assert "ERROR:" in result.output
     assert "does not exist" in result.output
+
