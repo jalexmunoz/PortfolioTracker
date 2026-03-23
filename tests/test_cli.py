@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from portfolio_tracker_v2.cli import main
 from portfolio_tracker_v2.config import DB_PATH
 from portfolio_tracker_v2.core import Database
+from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 from portfolio_tracker_v2.services.price_svc import AssetRefreshResult, RefreshReport
 
 
@@ -1921,3 +1922,269 @@ def test_delete_transaction_nonexistent_id_returns_exit_2(tmp_path, monkeypatch)
     assert "ERROR:" in result.output
     assert "does not exist" in result.output
 
+
+
+def test_import_legacy_positions_csv_dry_run_valid_csv_shows_summary_and_keeps_db_unchanged(tmp_path, monkeypatch):
+    db_file = tmp_path / "legacy_seed_dry_run.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BTC,1,100,100,Main
+ETH,2,400,200,Main
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20", "--dry-run"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert f"File read: {csv_path}" in result.output
+    assert "Seed date: 2026-03-20" in result.output
+    assert "Dry run: no seed positions persisted" in result.output
+    assert "Rows processed: 2" in result.output
+    assert "Would seed OK: 2" in result.output
+    assert "Rejected: 0" in result.output
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT COUNT(1) FROM transactions")
+    assert cursor.fetchone()[0] == 0
+
+
+def test_import_legacy_positions_csv_imports_rows_and_preserves_fifo_order(tmp_path, monkeypatch):
+    db_file = tmp_path / "legacy_seed_fifo.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BTC,1,100,100,Main
+BTC,2,300,150,Main
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20"],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert "Seeded OK: 2" in result.output
+    assert "Rejected: 0" in result.output
+
+    sell = runner.invoke(
+        main,
+        ["sell", "--symbol", "BTC", "--account", "Main", "--qty", "1.5", "--price", "200", "--date", "2026-03-21"],
+        env=env,
+    )
+    assert sell.exit_code == 0
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute(
+        """
+        SELECT t.unit_price, lm.quantity
+        FROM lot_matches lm
+        JOIN transactions t ON t.id = lm.buy_tx_id
+        ORDER BY lm.id ASC
+        """
+    )
+    matches = cursor.fetchall()
+
+    assert len(matches) == 2
+    assert Decimal(str(matches[0][0])) == Decimal("100")
+    assert Decimal(str(matches[0][1])) == Decimal("1")
+    assert Decimal(str(matches[1][0])) == Decimal("150")
+    assert Decimal(str(matches[1][1])) == Decimal("0.5")
+
+
+def test_import_legacy_positions_csv_rejects_inconsistent_row_and_persists_nothing(tmp_path, monkeypatch):
+    db_file = tmp_path / "legacy_seed_invalid.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BTC,2,100,70,Main
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20"],
+        env=env,
+    )
+
+    assert result.exit_code == 2
+    assert "Rejected: 1" in result.output
+    assert "Quantity * Avg Cost (USD) does not match Total Cost (USD)" in result.output
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT COUNT(1) FROM transactions")
+    assert cursor.fetchone()[0] == 0
+
+
+def test_import_legacy_positions_csv_positions_reflect_seeded_rows(tmp_path, monkeypatch):
+    db_file = tmp_path / "legacy_seed_positions.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BTC,1,100,100,Main
+ETH,2,400,200,Trezor
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    assert runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20"],
+        env=env,
+    ).exit_code == 0
+
+    positions = runner.invoke(main, ["positions"], env=env)
+
+    assert positions.exit_code == 0
+    assert "BTC" in positions.output
+    assert "ETH" in positions.output
+    assert "Main" in positions.output
+    assert "Trezor" in positions.output
+
+
+def test_import_legacy_positions_csv_summary_supports_special_assets(tmp_path, monkeypatch):
+    from datetime import date as real_date
+
+    db_file = tmp_path / "legacy_seed_summary_specials.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BBVA CDT,1,4644,7897.48,BBVA
+Fondo Dinamico,1,263.25,263.25,Trii
+GOLD,2,7554,3777,SB
+SILVER,4,234,58.5,SB
+BTC,1,100,100,Main
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    assert runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20"],
+        env=env,
+    ).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    gold = resolver.resolve("GOLD")
+    silver = resolver.resolve("SILVER")
+    btc = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (3900.0, "tradingview", "2026-03-22", gold["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (65.0, "tradingview", "2026-03-22", silver["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (120.0, "coingecko", "2026-03-22", btc["id"]),
+    )
+    conn.commit()
+    db.close()
+
+    with patch("portfolio_tracker_v2.services.pnl_svc.date") as mock_date:
+        mock_date.today.return_value = real_date(2026, 3, 22)
+        summary = runner.invoke(main, ["summary"], env=env)
+
+    assert summary.exit_code == 0
+    assert "Non-Market Valued" in summary.output
+    assert "Metals" in summary.output
+    assert "Total Equity: 13,186.16" in summary.output
+    assert "Non-Market Valued: 5,006.16" in summary.output
+
+
+def test_import_legacy_positions_csv_daily_report_supports_special_assets(tmp_path, monkeypatch):
+    from datetime import date as real_date
+
+    db_file = tmp_path / "legacy_seed_daily_specials.db"
+    csv_path = tmp_path / "portfoliototal.csv"
+    history_dir = tmp_path / "history"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    csv_path.write_text(
+        """Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet
+BBVA CDT,1,4644,7897.48,BBVA
+Fondo Dinamico,1,263.25,263.25,Trii
+GOLD,2,7554,3777,SB
+SILVER,4,234,58.5,SB
+BTC,1,100,100,Main
+""",
+        encoding="utf-8",
+    )
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    assert runner.invoke(
+        main,
+        ["import-legacy-positions-csv", str(csv_path), "--seed-date", "2026-03-20"],
+        env=env,
+    ).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    gold = resolver.resolve("GOLD")
+    silver = resolver.resolve("SILVER")
+    btc = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (3900.0, "tradingview", "2026-03-22", gold["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (65.0, "tradingview", "2026-03-22", silver["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (120.0, "coingecko", "2026-03-22", btc["id"]),
+    )
+    conn.commit()
+    db.close()
+
+    with patch("portfolio_tracker_v2.services.pnl_svc.date") as mock_date:
+        mock_date.today.return_value = real_date(2026, 3, 22)
+        daily = runner.invoke(main, ["daily-report", "--skip-refresh", "--history-dir", str(history_dir)], env=env)
+
+    assert daily.exit_code == 0
+    assert "Refresh skipped (--skip-refresh)" in daily.output
+    assert "BBVA CDT" in daily.output
+    assert "FONDO DINAMICO" in daily.output
+    assert "GOLD" in daily.output
+    assert "SILVER" in daily.output

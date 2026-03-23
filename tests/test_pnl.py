@@ -1,7 +1,9 @@
 """
 Tests for PnL service.
 """
+from datetime import date as real_date
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
@@ -559,13 +561,18 @@ def test_summary_hybrid_valuation_methods(services):
     assert by_symbol['FONDO DINAMICO']['valuation_status'] == 'usable_non_market'
     assert 'SWTCH' not in by_symbol
 
-    summary = pnl_svc.summary(account='Main')
-    assert summary['total_equity'] == Decimal('200')
+    with patch('portfolio_tracker_v2.services.pnl_svc.date') as mock_date:
+        mock_date.today.return_value = real_date(2026, 3, 22)
+        summary = pnl_svc.summary(account='Main')
+
+    expected_bbva = Decimal('100') * (Decimal('1') + Decimal('0.092') * Decimal('80') / Decimal('365'))
+    expected_total_equity = expected_bbva + Decimal('100')
+    assert summary['total_equity'] == expected_total_equity
     assert summary['market_covered_value'] == Decimal('0')
-    assert summary['non_market_valued'] == Decimal('200')
+    assert summary['non_market_valued'] == expected_total_equity
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
     assert summary['unvalued_positions'] == 0
-    assert summary['asset_class_breakdown']['Non-market'] == Decimal('200')
+    assert summary['asset_class_breakdown']['Non-market'] == expected_total_equity
     assert summary['asset_class_breakdown']['Crypto'] == Decimal('0')
     assert summary['asset_class_breakdown']['Equities'] == Decimal('0')
     assert summary['asset_class_breakdown']['Metals'] == Decimal('0')

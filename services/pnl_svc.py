@@ -1,7 +1,7 @@
 """
 PnL (Profit and Loss) service.
 """
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -13,6 +13,9 @@ class PnLService:
     """Service for calculating position and valuation metrics."""
 
     APPROVED_NON_MARKET_METHODS = {'snapshot_imported', 'contractual_value'}
+    BBVA_CDT_OPEN_DATE = date(2026, 1, 1)
+    BBVA_CDT_MATURITY_DATE = date(2026, 6, 1)
+    BBVA_CDT_ANNUAL_RATE = Decimal('0.092')
 
     def __init__(self, db: Database, resolver: AssetResolver):
         self.db = db
@@ -65,8 +68,7 @@ class PnLService:
 
         return 'Equities'
 
-    def _get_non_market_approved_price(self, asset_id: int, account: Optional[str]) -> Decimal | None:
-        """Fallback approved valuation for non-market assets from latest buy-side unit price."""
+    def _get_latest_buy_unit_price(self, asset_id: int, account: Optional[str]) -> Decimal | None:
         conn = self.db.connect()
         cursor = conn.cursor()
 
@@ -101,6 +103,18 @@ class PnLService:
         if not row or row[0] is None:
             return None
         return Decimal(str(row[0]))
+
+    def _get_non_market_approved_price(self, asset_id: int, account: Optional[str], symbol: str, valuation_method: str) -> Decimal | None:
+        """Approved valuation for non-market assets from snapshot/manual/contractual rules."""
+        if valuation_method == 'contractual_value' and symbol == 'BBVA CDT':
+            principal = self._get_latest_buy_unit_price(asset_id, account)
+            if principal is None:
+                return None
+            report_date = min(date.today(), self.BBVA_CDT_MATURITY_DATE)
+            elapsed_days = max((report_date - self.BBVA_CDT_OPEN_DATE).days, 0)
+            return principal * (Decimal('1') + self.BBVA_CDT_ANNUAL_RATE * Decimal(elapsed_days) / Decimal('365'))
+
+        return self._get_latest_buy_unit_price(asset_id, account)
 
     def realized_pnl(self, symbol: Optional[str] = None, account: Optional[str] = None) -> Decimal:
         conn = self.db.connect()
@@ -259,8 +273,14 @@ class PnLService:
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
             valuation_method = row[1] if row and row[1] else asset.get('valuation_method', 'unvalued')
             effective_price = current_price
-            if effective_price is None and valuation_method in self.APPROVED_NON_MARKET_METHODS:
-                effective_price = self._get_non_market_approved_price(asset['id'], acct)
+            if valuation_method == 'contractual_value':
+                non_market_price = self._get_non_market_approved_price(asset['id'], acct, sym, valuation_method)
+                if non_market_price is not None:
+                    effective_price = non_market_price
+            elif effective_price is None and valuation_method in self.APPROVED_NON_MARKET_METHODS:
+                non_market_price = self._get_non_market_approved_price(asset['id'], acct, sym, valuation_method)
+                if non_market_price is not None:
+                    effective_price = non_market_price
             valuation_status = self._resolve_valuation_status(valuation_method, asset['id'], effective_price)
 
             approved_value = None

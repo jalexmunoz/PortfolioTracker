@@ -19,6 +19,10 @@ from portfolio_tracker_v2.services.transaction_csv_importer import (
     TransactionCsvImportError,
     TransactionCsvImporter,
 )
+from portfolio_tracker_v2.services.legacy_seed_importer import (
+    LegacyPositionsCsvImporter,
+    LegacySeedImportError,
+)
 from portfolio_tracker_v2.services.pnl_svc import PnLService
 from portfolio_tracker_v2.services.price_svc import RefreshReport, refresh_prices
 from portfolio_tracker_v2.scripts import init_db as init_db_script
@@ -586,6 +590,29 @@ def _render_transaction_csv_import_result(result):
     if remaining > 0:
         click.echo(f"  ... and {remaining} more")
 
+
+def _render_legacy_seed_import_result(result):
+    rejected_count = len(result.rejected_rows)
+    imported_label = "Would seed OK" if result.dry_run else "Seeded OK"
+    click.echo(f"File read: {result.file_path}")
+    click.echo(f"Seed date: {result.seed_date}")
+    if result.dry_run:
+        click.echo("Dry run: no seed positions persisted")
+    click.echo(f"Rows processed: {result.total_rows}")
+    click.echo(f"{imported_label}: {result.imported_rows}")
+    click.echo(f"Rejected: {rejected_count}")
+    if not rejected_count:
+        return
+
+    click.echo("Rejected rows:")
+    max_errors_to_show = 20
+    for rejected in result.rejected_rows[:max_errors_to_show]:
+        click.echo(f"  row {rejected.row_number}: {rejected.reason}")
+
+    remaining = rejected_count - max_errors_to_show
+    if remaining > 0:
+        click.echo(f"  ... and {remaining} more")
+
 @click.group()
 def main():
     """Portfolio Tracker v2 command line interface."""
@@ -669,6 +696,31 @@ def cli_import_transactions_csv(csv_path, dry_run):
             temp_db.close()
         if temp_db_path and os.path.exists(temp_db_path):
             os.remove(temp_db_path)
+
+
+@main.command("import-legacy-positions-csv")
+@click.argument("csv_path", type=click.Path(dir_okay=False))
+@click.option("--seed-date", required=True, help="Common seed date to assign to imported open-position lots (YYYY-MM-DD).")
+@click.option("--dry-run", is_flag=True, help="Validate and summarize without writing seed positions to the real database.")
+def cli_import_legacy_positions_csv(csv_path, seed_date, dry_run):
+    """Import legacy open positions snapshot as seed lots."""
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    importer = LegacyPositionsCsvImporter(db, resolver)
+
+    try:
+        result = importer.import_file(csv_path, seed_date=seed_date, dry_run=dry_run)
+        _render_legacy_seed_import_result(result)
+        if result.rejected_rows:
+            raise click.exceptions.Exit(2)
+    except LegacySeedImportError as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    except click.exceptions.Exit:
+        raise
+    except Exception as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
 
 
 @main.command("add-transaction")
