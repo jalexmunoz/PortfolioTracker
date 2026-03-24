@@ -432,3 +432,91 @@ def test_list_open_lots_restores_after_delete_sell(transaction_svc):
     assert len(after) == 1
     assert after[0]['buy_tx_id'] == buy_id
     assert Decimal(str(after[0]['remaining_qty'])) == Decimal('2')
+
+def test_list_transactions_filters_by_side(transaction_svc):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('0.5'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+
+    rows = transaction_svc.list_transactions(account='Main', symbol='BTC', side='SELL', limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]['side'] == 'SELL'
+
+
+def test_list_transactions_filters_by_tx_id_and_combined_filters(transaction_svc):
+    buy_main_btc = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    transaction_svc.record_buy(
+        symbol='ETH',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('80'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Alt',
+        qty=Decimal('1'),
+        unit_price=Decimal('90'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+
+    by_id = transaction_svc.list_transactions(tx_id=buy_main_btc, limit=10)
+    assert len(by_id) == 1
+    assert by_id[0]['id'] == buy_main_btc
+
+    combined = transaction_svc.list_transactions(account='Main', symbol='BTC', side='BUY', limit=10)
+    assert len(combined) == 1
+    assert combined[0]['id'] == buy_main_btc
+
+
+def test_list_transactions_filters_by_date_range(transaction_svc):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-20',
+    )
+    keep_id = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('110'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-22',
+    )
+
+    rows = transaction_svc.list_transactions(
+        account='Main',
+        symbol='BTC',
+        from_date='2026-03-21',
+        to_date='2026-03-22',
+        limit=10,
+    )
+
+    assert len(rows) == 1
+    assert rows[0]['id'] == keep_id

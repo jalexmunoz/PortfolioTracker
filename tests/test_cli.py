@@ -567,7 +567,7 @@ def test_list_transactions_rejects_invalid_inputs(tmp_path, monkeypatch):
 
     result_date = runner.invoke(main, ["list-transactions", "--from-date", "2026/03/20"], env=env)
     assert result_date.exit_code != 0
-    assert "Invalid value for '--from-date'" in result_date.output
+    assert "Invalid value for '--date-from' / '--from-date'" in result_date.output
 
 
 def test_refresh_prices(tmp_path, monkeypatch):
@@ -2354,3 +2354,106 @@ def test_list_open_lots_cli_reflects_delete_sell_restoration(tmp_path, monkeypat
     assert after.exit_code == 0
     assert "2" in after.output
     assert "0.5" not in after.output
+
+def test_list_transactions_filters_by_side(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_side.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Trezor", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-21", "--account", "Trezor", "--symbol", "BTC", "--side", "sell", "--qty", "0.5", "--price", "120"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--side", "SELL"], env=env)
+
+    assert result.exit_code == 0
+    assert "SELL" in result.output
+    assert "BUY" not in result.output
+
+
+def test_list_transactions_filters_combined(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_combined.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Trezor", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Phemex", "--symbol", "ETH", "--side", "buy", "--qty", "1", "--price", "80"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Bingx", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "90"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--symbol", "BTC", "--account", "Trezor", "--side", "BUY"], env=env)
+
+    assert result.exit_code == 0
+    assert "Trezor" in result.output
+    assert "BTC" in result.output
+    assert "Phemex" not in result.output
+    assert "Bingx" not in result.output
+
+
+def test_list_transactions_filter_by_tx_id(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_id.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Main", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-21", "--account", "Main", "--symbol", "ETH", "--side", "buy", "--qty", "1", "--price", "80"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions ORDER BY id ASC LIMIT 1")
+    tx_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["list-transactions", "--tx-id", str(tx_id)], env=env)
+
+    assert result.exit_code == 0
+    assert f"{tx_id}" in result.output
+    assert "ETH" not in result.output
+
+
+def test_list_transactions_accepts_date_aliases(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_date_alias.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-20", "--account", "Main", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-22", "--account", "Main", "--symbol", "ETH", "--side", "buy", "--qty", "1", "--price", "80"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--date-from", "2026-03-21", "--date-to", "2026-03-22"], env=env)
+
+    assert result.exit_code == 0
+    assert "ETH" in result.output
+    assert "BTC" not in result.output
+
+
+def test_list_transactions_rejects_invalid_side(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_invalid_side.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    result = runner.invoke(main, ["list-transactions", "--side", "HOLD"], env=env)
+    assert result.exit_code != 0
+    assert "Invalid value for '--side'" in result.output
+
+
+def test_list_transactions_rejects_empty_symbol_account_and_invalid_date_order(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_invalid_values.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    result_symbol = runner.invoke(main, ["list-transactions", "--symbol", "   "], env=env)
+    assert result_symbol.exit_code != 0
+    assert "symbol cannot be empty" in result_symbol.output
+
+    result_account = runner.invoke(main, ["list-transactions", "--account", "   "], env=env)
+    assert result_account.exit_code != 0
+    assert "account cannot be empty" in result_account.output
+
+    result_order = runner.invoke(main, ["list-transactions", "--date-from", "2026-03-22", "--date-to", "2026-03-21"], env=env)
+    assert result_order.exit_code != 0
+    assert "date-from cannot be after date-to" in result_order.output

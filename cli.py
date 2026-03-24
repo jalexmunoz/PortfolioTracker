@@ -816,21 +816,29 @@ def cli_delete_transaction(tx_id):
 @main.command("list-transactions")
 @click.option("--account", default=None)
 @click.option("--symbol", default=None)
+@click.option("--side", default=None, type=click.Choice(["BUY", "SELL", "MIGRATION_BUY"], case_sensitive=False))
+@click.option("--tx-id", "tx_id", default=None, type=click.IntRange(min=1))
 @click.option("--limit", default=50, show_default=True, type=click.IntRange(min=1))
-@click.option("--from-date", "from_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
-@click.option("--to-date", "to_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
-def cli_list_transactions(account, symbol, limit, from_date, to_date):
+@click.option("--date-from", "--from-date", "from_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--date-to", "--to-date", "to_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
+def cli_list_transactions(account, symbol, side, tx_id, limit, from_date, to_date):
     """List recorded ledger transactions ordered from newest to oldest."""
+    if account is not None and not account.strip():
+        raise click.BadParameter("account cannot be empty", param_hint="account")
+    if symbol is not None and not symbol.strip():
+        raise click.BadParameter("symbol cannot be empty", param_hint="symbol")
     if from_date and to_date and from_date.date() > to_date.date():
-        raise click.BadParameter("from-date cannot be after to-date")
+        raise click.BadParameter("date-from cannot be after date-to")
 
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = TransactionService(db, resolver)
 
     rows = svc.list_transactions(
-        account=account,
-        symbol=symbol,
+        account=account.strip() if account is not None else None,
+        symbol=symbol.strip().upper() if symbol is not None else None,
+        side=side.upper() if side else None,
+        tx_id=tx_id,
         from_date=from_date.date().isoformat() if from_date else None,
         to_date=to_date.date().isoformat() if to_date else None,
         limit=limit,
@@ -863,7 +871,6 @@ def cli_list_transactions(account, symbol, limit, from_date, to_date):
         ["ID", "Date", "Account", "Symbol", "Side", "Qty", "Price", "Fee", "Total", "Proceeds", "Cost Basis", "Realized PnL"],
         table_rows,
     )
-
 @main.command("list-open-lots")
 @click.option("--account", default=None)
 @click.option("--symbol", default=None)

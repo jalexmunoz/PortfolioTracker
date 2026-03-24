@@ -262,6 +262,8 @@ class TransactionService:
         self,
         account: Optional[str] = None,
         symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        tx_id: Optional[int] = None,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         limit: int = 50,
@@ -311,6 +313,12 @@ class TransactionService:
         if symbol:
             where_clauses.append("a.symbol = ?")
             params.append(symbol.strip().upper())
+        if side:
+            where_clauses.append("t.tx_type = ?")
+            params.append(side.strip().upper())
+        if tx_id is not None:
+            where_clauses.append("t.id = ?")
+            params.append(int(tx_id))
         if from_date:
             where_clauses.append("t.tx_date >= ?")
             params.append(from_date)
