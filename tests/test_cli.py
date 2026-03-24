@@ -1,4 +1,5 @@
 import json
+import csv
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -2457,3 +2458,128 @@ def test_list_transactions_rejects_empty_symbol_account_and_invalid_date_order(t
     result_order = runner.invoke(main, ["list-transactions", "--date-from", "2026-03-22", "--date-to", "2026-03-21"], env=env)
     assert result_order.exit_code != 0
     assert "date-from cannot be after date-to" in result_order.output
+
+
+def test_list_transactions_output_csv_writes_expected_file(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_export.db"
+    out_csv = tmp_path / "transactions.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "0.5", "--price", "120"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--output-csv", str(out_csv)], env=env)
+    assert result.exit_code == 0
+    assert "CSV exported to" in result.output
+    assert out_csv.exists()
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 2
+    assert rows[0]["id"]
+    assert rows[0]["tx_date"]
+    assert rows[0]["symbol"] == "BTC"
+    assert rows[0]["account"] == "Test"
+    assert rows[0]["side"] in {"BUY", "SELL"}
+
+    buy_row = next(r for r in rows if r["side"] == "BUY")
+    sell_row = next(r for r in rows if r["side"] == "SELL")
+    assert buy_row["gross_proceeds"] == ""
+    assert buy_row["matched_cost_basis"] == ""
+    assert buy_row["realized_pnl"] == ""
+    assert sell_row["realized_pnl"] == "10.00"
+
+
+def test_list_transactions_output_csv_respects_filters(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_export_filter.db"
+    out_csv = tmp_path / "transactions_btc.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Trezor", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Phemex", "--symbol", "ETH", "--side", "buy", "--qty", "1", "--price", "80"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--symbol", "BTC", "--output-csv", str(out_csv)], env=env)
+    assert result.exit_code == 0
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTC"
+    assert rows[0]["account"] == "Trezor"
+
+
+def test_list_open_lots_output_csv_writes_expected_file(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_export.db"
+    out_csv = tmp_path / "open_lots.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "2", "--price", "110"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-03", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "2.5", "--price", "120"], env)
+
+    result = runner.invoke(main, ["list-open-lots", "--output-csv", str(out_csv)], env=env)
+    assert result.exit_code == 0
+    assert out_csv.exists()
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTC"
+    assert rows[0]["remaining_qty"] == "0.5"
+    assert rows[0]["remaining_cost_basis"] == "55.00"
+
+
+def test_list_open_lots_output_csv_respects_filters(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_export_filter.db"
+    out_csv = tmp_path / "open_lots_trezor.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--date", "2026-03-01", "--account", "Trezor", "--symbol", "BTC", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["buy", "--date", "2026-03-01", "--account", "Phemex", "--symbol", "ETH", "--qty", "1", "--price", "80"], env)
+
+    result = runner.invoke(main, ["list-open-lots", "--account", "Trezor", "--output-csv", str(out_csv)], env=env)
+    assert result.exit_code == 0
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["account"] == "Trezor"
+    assert rows[0]["symbol"] == "BTC"
+
+
+def test_list_transactions_output_csv_supports_stdout_dash(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_stdout.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+
+    result = runner.invoke(main, ["list-transactions", "--output-csv", "-"], env=env)
+    assert result.exit_code == 0
+    assert "id,tx_date,symbol,side,qty,unit_price,account,gross_proceeds,matched_cost_basis,realized_pnl" in result.output
+    assert "BUY" in result.output
+
+
+def test_list_open_lots_output_csv_rejects_empty_path(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_export_empty.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["list-open-lots", "--output-csv", "   "], env=env)
+
+    assert result.exit_code != 0
+    assert "output-csv cannot be empty" in result.output

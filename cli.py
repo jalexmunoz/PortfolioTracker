@@ -1,4 +1,5 @@
 import contextlib
+import csv
 import io
 import json
 import os
@@ -553,6 +554,32 @@ def display_table(headers, rows):
 
 
 
+def _write_csv_output(output_csv: str, headers: list[str], rows: list[tuple]) -> None:
+    output_path = (output_csv or "").strip()
+    if not output_path:
+        raise click.BadParameter("output-csv cannot be empty", param_hint="output_csv")
+
+    try:
+        if output_path == "-":
+            writer = csv.writer(click.get_text_stream("stdout"), lineterminator="\n")
+            writer.writerow(headers)
+            writer.writerows(rows)
+            return
+
+        export_dir = os.path.dirname(output_path)
+        if export_dir:
+            os.makedirs(export_dir, exist_ok=True)
+
+        with open(output_path, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(headers)
+            writer.writerows(rows)
+    except OSError as exc:
+        click.echo(f"ERROR: failed to write CSV: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+
+
+
 def _normalize_tx_date(tx_date) -> str:
     if tx_date is None:
         return date.today().isoformat()
@@ -821,7 +848,8 @@ def cli_delete_transaction(tx_id):
 @click.option("--limit", default=50, show_default=True, type=click.IntRange(min=1))
 @click.option("--date-from", "--from-date", "from_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--date-to", "--to-date", "to_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
-def cli_list_transactions(account, symbol, side, tx_id, limit, from_date, to_date):
+@click.option("--output-csv", "output_csv", default=None)
+def cli_list_transactions(account, symbol, side, tx_id, limit, from_date, to_date, output_csv):
     """List recorded ledger transactions ordered from newest to oldest."""
     if account is not None and not account.strip():
         raise click.BadParameter("account cannot be empty", param_hint="account")
@@ -843,6 +871,40 @@ def cli_list_transactions(account, symbol, side, tx_id, limit, from_date, to_dat
         to_date=to_date.date().isoformat() if to_date else None,
         limit=limit,
     )
+
+    csv_headers = [
+        "id",
+        "tx_date",
+        "symbol",
+        "side",
+        "qty",
+        "unit_price",
+        "account",
+        "gross_proceeds",
+        "matched_cost_basis",
+        "realized_pnl",
+    ]
+    csv_rows = [
+        (
+            str(tx["id"]),
+            str(tx["tx_date"]),
+            tx["symbol"],
+            tx["side"],
+            format_qty(Decimal(str(tx["quantity"]))),
+            format_money(Decimal(str(tx["unit_price"]))),
+            tx["account"],
+            "" if tx["gross_proceeds"] is None else format_money(Decimal(str(tx["gross_proceeds"]))),
+            "" if tx["matched_cost_basis"] is None else format_money(Decimal(str(tx["matched_cost_basis"]))),
+            "" if tx["realized_pnl"] is None else format_money(Decimal(str(tx["realized_pnl"]))),
+        )
+        for tx in rows
+    ]
+
+    if output_csv is not None:
+        _write_csv_output(output_csv, csv_headers, csv_rows)
+        if output_csv.strip() != "-":
+            click.echo(f"CSV exported to {output_csv.strip()} ({len(csv_rows)} row(s))")
+        return
 
     if not rows:
         click.echo("No transactions found for the given filters.")
@@ -874,13 +936,47 @@ def cli_list_transactions(account, symbol, side, tx_id, limit, from_date, to_dat
 @main.command("list-open-lots")
 @click.option("--account", default=None)
 @click.option("--symbol", default=None)
-def cli_list_open_lots(account, symbol):
+@click.option("--output-csv", "output_csv", default=None)
+def cli_list_open_lots(account, symbol, output_csv):
     """List open buy lots (remaining quantity > 0) for audit/inspection."""
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = TransactionService(db, resolver)
 
     rows = svc.list_open_lots(account=account, symbol=symbol)
+
+    csv_headers = [
+        "buy_tx_id",
+        "tx_date",
+        "symbol",
+        "account",
+        "origin",
+        "original_qty",
+        "remaining_qty",
+        "unit_cost",
+        "remaining_cost_basis",
+    ]
+    csv_rows = [
+        (
+            str(lot["buy_tx_id"]),
+            str(lot["tx_date"]),
+            lot["symbol"],
+            lot["account"],
+            lot["origin"],
+            format_qty(Decimal(str(lot["original_qty"]))),
+            format_qty(Decimal(str(lot["remaining_qty"]))),
+            format_money(Decimal(str(lot["unit_price"]))),
+            format_money(Decimal(str(lot["remaining_cost_basis"]))),
+        )
+        for lot in rows
+    ]
+
+    if output_csv is not None:
+        _write_csv_output(output_csv, csv_headers, csv_rows)
+        if output_csv.strip() != "-":
+            click.echo(f"CSV exported to {output_csv.strip()} ({len(csv_rows)} row(s))")
+        return
+
     if not rows:
         click.echo("No open lots found for the given filters.")
         return
