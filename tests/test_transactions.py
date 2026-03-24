@@ -241,3 +241,63 @@ def test_negative_fee_raises_error(transaction_svc):
             fee_usd=Decimal('-5'),  # Invalid
             tx_date='2020-01-01',
         )
+
+
+def test_list_transactions_includes_realized_fields_for_sell_single_lot(transaction_svc):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+
+    rows = transaction_svc.list_transactions(account='Main', symbol='BTC', limit=10)
+    sell_row = next(r for r in rows if r['side'] == 'SELL')
+
+    assert Decimal(str(sell_row['gross_proceeds'])) == Decimal('120')
+    assert Decimal(str(sell_row['matched_cost_basis'])) == Decimal('100')
+    assert Decimal(str(sell_row['realized_pnl'])) == Decimal('20')
+
+
+def test_list_transactions_includes_realized_fields_for_sell_multi_lot_fifo(transaction_svc):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('110'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+    transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2.5'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-03',
+    )
+
+    rows = transaction_svc.list_transactions(account='Main', symbol='BTC', limit=10)
+    sell_row = next(r for r in rows if r['side'] == 'SELL')
+
+    assert Decimal(str(sell_row['gross_proceeds'])) == Decimal('300')
+    assert Decimal(str(sell_row['matched_cost_basis'])) == Decimal('265')
+    assert Decimal(str(sell_row['realized_pnl'])) == Decimal('35')

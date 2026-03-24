@@ -853,10 +853,16 @@ def cli_list_transactions(account, symbol, limit, from_date, to_date):
                 format_money(Decimal(str(tx["unit_price"]))),
                 format_money(Decimal(str(tx["fee_usd"]))),
                 format_money(Decimal(str(tx["total_usd"]))),
+                _format_optional_money(tx["gross_proceeds"]),
+                _format_optional_money(tx["matched_cost_basis"]),
+                _format_optional_money(tx["realized_pnl"]),
             )
         )
 
-    display_table(["ID", "Date", "Account", "Symbol", "Side", "Qty", "Price", "Fee", "Total"], table_rows)
+    display_table(
+        ["ID", "Date", "Account", "Symbol", "Side", "Qty", "Price", "Fee", "Total", "Proceeds", "Cost Basis", "Realized PnL"],
+        table_rows,
+    )
 
 
 @main.command("positions")
@@ -1171,3 +1177,4 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
+

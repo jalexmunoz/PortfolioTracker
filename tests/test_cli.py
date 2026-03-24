@@ -2235,3 +2235,56 @@ BTC,1,100,100,Main
     assert "FONDO DINAMICO" in daily.output
     assert "GOLD" in daily.output
     assert "SILVER" in daily.output
+
+
+def test_list_transactions_shows_realized_fields_for_sell_and_na_for_buy(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_realized.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "2", "--price", "110"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-03", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "2.5", "--price", "120"], env)
+
+    listed = runner.invoke(main, ["list-transactions", "--account", "Test", "--symbol", "BTC"], env=env)
+    assert listed.exit_code == 0
+    assert "Proceeds" in listed.output
+    assert "Cost Basis" in listed.output
+    assert "Realized PnL" in listed.output
+    assert "300.00" in listed.output
+    assert "265.00" in listed.output
+    assert "35.00" in listed.output
+    assert "N/A" in listed.output
+
+    summary = runner.invoke(main, ["summary", "--account", "Test"], env=env)
+    assert summary.exit_code == 0
+    assert "Total realized PnL: 35.00" in summary.output
+
+
+def test_list_transactions_sell_realized_disappears_after_delete(tmp_path, monkeypatch):
+    db_file = tmp_path / "list_tx_realized_delete.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "0.5", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'SELL' ORDER BY id ASC LIMIT 1")
+    sell_id = cursor.fetchone()[0]
+
+    before = runner.invoke(main, ["list-transactions", "--account", "Test", "--symbol", "BTC"], env=env)
+    assert before.exit_code == 0
+    assert "Realized PnL" in before.output
+    assert "10.00" in before.output
+
+    deleted = runner.invoke(main, ["delete-transaction", str(sell_id)], env=env)
+    assert deleted.exit_code == 0
+
+    after = runner.invoke(main, ["list-transactions", "--account", "Test", "--symbol", "BTC"], env=env)
+    assert after.exit_code == 0
+    assert "SELL" not in after.output
+    assert "10.00" not in after.output

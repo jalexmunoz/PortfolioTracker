@@ -280,10 +280,26 @@ class TransactionService:
                 t.quantity,
                 t.unit_price,
                 t.fee_usd,
-                t.total_usd
+                t.total_usd,
+                CASE WHEN t.tx_type = 'SELL' THEN (t.quantity * t.unit_price) ELSE NULL END as gross_proceeds,
+                sell_rollup.matched_cost_basis,
+                sell_rollup.realized_pnl
             FROM transactions t
             JOIN assets a ON a.id = t.asset_id
             JOIN accounts acc ON acc.id = t.account_id
+            LEFT JOIN (
+                SELECT
+                    lm.sell_tx_id,
+                    SUM(lm.quantity * t_buy.unit_price + lm.buy_fee_alloc) as matched_cost_basis,
+                    SUM(
+                        (lm.quantity * t_sell.unit_price - lm.sell_fee_alloc) -
+                        (lm.quantity * t_buy.unit_price + lm.buy_fee_alloc)
+                    ) as realized_pnl
+                FROM lot_matches lm
+                JOIN transactions t_buy ON t_buy.id = lm.buy_tx_id
+                JOIN transactions t_sell ON t_sell.id = lm.sell_tx_id
+                GROUP BY lm.sell_tx_id
+            ) sell_rollup ON sell_rollup.sell_tx_id = t.id
         """
 
         where_clauses = []
@@ -321,6 +337,9 @@ class TransactionService:
                 "unit_price": row[6],
                 "fee_usd": row[7],
                 "total_usd": row[8],
+                "gross_proceeds": row[9],
+                "matched_cost_basis": row[10],
+                "realized_pnl": row[11],
             }
             for row in rows
         ]
@@ -381,3 +400,4 @@ class TransactionService:
         except Exception:
             conn.rollback()
             raise
+
