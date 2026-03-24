@@ -344,6 +344,71 @@ class TransactionService:
             for row in rows
         ]
 
+    def list_open_lots(
+        self,
+        account: Optional[str] = None,
+        symbol: Optional[str] = None,
+    ):
+        """List open BUY/MIGRATION_BUY lots with remaining quantity."""
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
+        query = """
+            SELECT
+                t.id,
+                t.tx_date,
+                a.symbol,
+                acc.name,
+                t.tx_type,
+                t.quantity,
+                t.unit_price,
+                COALESCE(SUM(lm.quantity), 0) AS matched_qty
+            FROM transactions t
+            JOIN assets a ON a.id = t.asset_id
+            JOIN accounts acc ON acc.id = t.account_id
+            LEFT JOIN lot_matches lm ON lm.buy_tx_id = t.id
+            WHERE t.tx_type IN ('BUY', 'MIGRATION_BUY')
+        """
+
+        params = []
+        if account:
+            query += " AND acc.name = ?"
+            params.append(account.strip())
+        if symbol:
+            query += " AND a.symbol = ?"
+            params.append(symbol.strip().upper())
+
+        query += """
+            GROUP BY t.id, t.tx_date, a.symbol, acc.name, t.tx_type, t.quantity, t.unit_price
+            HAVING (t.quantity - COALESCE(SUM(lm.quantity), 0)) > 0
+            ORDER BY acc.name ASC, a.symbol ASC, t.tx_date ASC, t.id ASC
+        """
+
+        cursor.execute(query, tuple(params))
+        rows = cursor.fetchall()
+
+        result = []
+        for row in rows:
+            original_qty = Decimal(str(row[5]))
+            unit_price = Decimal(str(row[6]))
+            matched_qty = Decimal(str(row[7]))
+            remaining_qty = original_qty - matched_qty
+
+            result.append(
+                {
+                    "buy_tx_id": row[0],
+                    "tx_date": row[1],
+                    "symbol": row[2],
+                    "account": row[3],
+                    "origin": row[4],
+                    "original_qty": float(original_qty),
+                    "remaining_qty": float(remaining_qty),
+                    "unit_price": float(unit_price),
+                    "remaining_cost_basis": float(remaining_qty * unit_price),
+                }
+            )
+        return result
+
     def delete_transaction(self, tx_id: int) -> dict:
         """
         Delete a transaction by id with minimal consistency rules.
@@ -400,4 +465,3 @@ class TransactionService:
         except Exception:
             conn.rollback()
             raise
-

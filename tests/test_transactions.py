@@ -301,3 +301,134 @@ def test_list_transactions_includes_realized_fields_for_sell_multi_lot_fifo(tran
     assert Decimal(str(sell_row['gross_proceeds'])) == Decimal('300')
     assert Decimal(str(sell_row['matched_cost_basis'])) == Decimal('265')
     assert Decimal(str(sell_row['realized_pnl'])) == Decimal('35')
+
+def test_list_open_lots_shows_unconsumed_buy(transaction_svc):
+    buy_id = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+
+    rows = transaction_svc.list_open_lots(account='Main', symbol='BTC')
+
+    assert len(rows) == 1
+    lot = rows[0]
+    assert lot['buy_tx_id'] == buy_id
+    assert Decimal(str(lot['original_qty'])) == Decimal('1')
+    assert Decimal(str(lot['remaining_qty'])) == Decimal('1')
+    assert Decimal(str(lot['remaining_cost_basis'])) == Decimal('100')
+
+
+def test_list_open_lots_partial_and_full_consumed_behavior(transaction_svc):
+    buy1 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    buy2 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('110'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+    transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2.5'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-03',
+    )
+
+    rows = transaction_svc.list_open_lots(account='Main', symbol='BTC')
+
+    assert len(rows) == 1
+    lot = rows[0]
+    assert lot['buy_tx_id'] == buy2
+    assert lot['buy_tx_id'] != buy1
+    assert Decimal(str(lot['remaining_qty'])) == Decimal('0.5')
+    assert Decimal(str(lot['remaining_cost_basis'])) == Decimal('55')
+
+
+def test_list_open_lots_keeps_lots_separate_and_supports_filters(transaction_svc):
+    buy_main_btc_1 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    buy_main_btc_2 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('110'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Vault',
+        qty=Decimal('3'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-03',
+    )
+    transaction_svc.record_buy(
+        symbol='ETH',
+        account='Main',
+        qty=Decimal('4'),
+        unit_price=Decimal('50'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-04',
+    )
+
+    rows_main_btc = transaction_svc.list_open_lots(account='Main', symbol='BTC')
+    assert [r['buy_tx_id'] for r in rows_main_btc] == [buy_main_btc_1, buy_main_btc_2]
+
+    rows_main = transaction_svc.list_open_lots(account='Main')
+    assert all(r['account'] == 'Main' for r in rows_main)
+
+    rows_eth = transaction_svc.list_open_lots(symbol='ETH')
+    assert len(rows_eth) == 1
+    assert rows_eth[0]['symbol'] == 'ETH'
+
+
+def test_list_open_lots_restores_after_delete_sell(transaction_svc):
+    buy_id = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    sell_id = transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1.5'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+
+    before = transaction_svc.list_open_lots(account='Main', symbol='BTC')
+    assert len(before) == 1
+    assert Decimal(str(before[0]['remaining_qty'])) == Decimal('0.5')
+
+    deleted = transaction_svc.delete_transaction(sell_id)
+    assert deleted['id'] == sell_id
+
+    after = transaction_svc.list_open_lots(account='Main', symbol='BTC')
+    assert len(after) == 1
+    assert after[0]['buy_tx_id'] == buy_id
+    assert Decimal(str(after[0]['remaining_qty'])) == Decimal('2')

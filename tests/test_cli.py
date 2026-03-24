@@ -2288,3 +2288,69 @@ def test_list_transactions_sell_realized_disappears_after_delete(tmp_path, monke
     assert after.exit_code == 0
     assert "SELL" not in after.output
     assert "10.00" not in after.output
+
+def test_list_open_lots_cli_shows_remaining_fifo_lot(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_cli.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "2", "--price", "110"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-03", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "2.5", "--price", "120"], env)
+
+    result = runner.invoke(main, ["list-open-lots", "--account", "Test", "--symbol", "BTC"], env=env)
+
+    assert result.exit_code == 0
+    assert "BuyTxID" in result.output
+    assert "Remaining Qty" in result.output
+    assert "0.5" in result.output
+    assert "55.00" in result.output
+
+
+def test_list_open_lots_cli_filters_by_account_and_symbol(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_cli_filters.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--date", "2026-03-01", "--account", "Main", "--symbol", "BTC", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["buy", "--date", "2026-03-02", "--account", "Vault", "--symbol", "BTC", "--qty", "1", "--price", "200"], env)
+    run_cmd(runner, ["buy", "--date", "2026-03-03", "--account", "Main", "--symbol", "ETH", "--qty", "1", "--price", "50"], env)
+
+    by_account = runner.invoke(main, ["list-open-lots", "--account", "Main"], env=env)
+    assert by_account.exit_code == 0
+    assert "Main" in by_account.output
+    assert "Vault" not in by_account.output
+
+    by_symbol = runner.invoke(main, ["list-open-lots", "--symbol", "ETH"], env=env)
+    assert by_symbol.exit_code == 0
+    assert "ETH" in by_symbol.output
+    assert "BTC" not in by_symbol.output
+
+
+def test_list_open_lots_cli_reflects_delete_sell_restoration(tmp_path, monkeypatch):
+    db_file = tmp_path / "open_lots_cli_delete_sell.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--qty", "2", "--price", "100"], env)
+    run_cmd(runner, ["sell", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--qty", "1.5", "--price", "120"], env)
+
+    before = runner.invoke(main, ["list-open-lots", "--account", "Test", "--symbol", "BTC"], env=env)
+    assert before.exit_code == 0
+    assert "0.5" in before.output
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'SELL' ORDER BY id ASC LIMIT 1")
+    sell_id = cursor.fetchone()[0]
+
+    deleted = runner.invoke(main, ["delete-transaction", str(sell_id)], env=env)
+    assert deleted.exit_code == 0
+
+    after = runner.invoke(main, ["list-open-lots", "--account", "Test", "--symbol", "BTC"], env=env)
+    assert after.exit_code == 0
+    assert "2" in after.output
+    assert "0.5" not in after.output

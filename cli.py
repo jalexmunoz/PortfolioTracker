@@ -864,6 +864,40 @@ def cli_list_transactions(account, symbol, limit, from_date, to_date):
         table_rows,
     )
 
+@main.command("list-open-lots")
+@click.option("--account", default=None)
+@click.option("--symbol", default=None)
+def cli_list_open_lots(account, symbol):
+    """List open buy lots (remaining quantity > 0) for audit/inspection."""
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+
+    rows = svc.list_open_lots(account=account, symbol=symbol)
+    if not rows:
+        click.echo("No open lots found for the given filters.")
+        return
+
+    table_rows = []
+    for lot in rows:
+        table_rows.append(
+            (
+                str(lot["buy_tx_id"]),
+                str(lot["tx_date"]),
+                lot["account"],
+                lot["symbol"],
+                lot["origin"],
+                format_qty(Decimal(str(lot["original_qty"]))),
+                format_qty(Decimal(str(lot["remaining_qty"]))),
+                format_money(Decimal(str(lot["unit_price"]))),
+                format_money(Decimal(str(lot["remaining_cost_basis"]))),
+            )
+        )
+
+    display_table(
+        ["BuyTxID", "Date", "Account", "Symbol", "Origin", "Original Qty", "Remaining Qty", "Unit Cost", "Remaining Basis"],
+        table_rows,
+    )
 
 @main.command("positions")
 @click.option("--symbol", default=None)
@@ -1177,4 +1211,3 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
-
