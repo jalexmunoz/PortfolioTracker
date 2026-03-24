@@ -13,6 +13,7 @@ import click
 from portfolio_tracker_v2 import config
 from portfolio_tracker_v2.core import Database
 from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 from portfolio_tracker_v2.migration.csv_importer import CSVImporter
 from portfolio_tracker_v2.services.transaction_svc import TransactionService
 from portfolio_tracker_v2.services.transaction_csv_importer import (
@@ -552,22 +553,58 @@ def display_table(headers, rows):
 
 
 
-def _record_transaction_from_cli(side, symbol, account, qty, price, fee, tx_date, notes):
+def _normalize_tx_date(tx_date) -> str:
     if tx_date is None:
-        tx_date = date.today().isoformat()
+        return date.today().isoformat()
+    if isinstance(tx_date, datetime):
+        return tx_date.date().isoformat()
+    if isinstance(tx_date, date):
+        return tx_date.isoformat()
+
+    tx_date_text = str(tx_date).strip()
+    try:
+        return date.fromisoformat(tx_date_text).isoformat()
+    except ValueError as exc:
+        raise click.BadParameter("tx_date must be in YYYY-MM-DD format", param_hint="tx_date") from exc
+
+
+def _record_transaction_from_cli(side, symbol, account, qty, price, fee, tx_date, notes):
+    symbol_normalized = (symbol or "").strip().upper()
+    if not symbol_normalized:
+        raise click.BadParameter("symbol cannot be empty", param_hint="symbol")
+
+    account_normalized = (account or "").strip()
+    if not account_normalized:
+        raise click.BadParameter("account cannot be empty", param_hint="account")
+
+    tx_date_normalized = _normalize_tx_date(tx_date)
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = TransactionService(db, resolver)
     side_normalized = side.lower()
-    if side_normalized == "buy":
-        svc.record_buy(symbol, account, qty, price, fee, tx_date, notes)
-        click.echo("BUY recorded")
-    elif side_normalized == "sell":
-        svc.record_sell(symbol, account, qty, price, fee, tx_date, notes)
-        click.echo("SELL recorded")
-    else:
-        raise click.BadParameter(f"Unsupported side: {side}", param_hint="side")
 
+    try:
+        if side_normalized == "buy":
+            tx_id = svc.record_buy(symbol_normalized, account_normalized, qty, price, fee, tx_date_normalized, notes)
+            side_label = "BUY"
+        elif side_normalized == "sell":
+            tx_id = svc.record_sell(symbol_normalized, account_normalized, qty, price, fee, tx_date_normalized, notes)
+            side_label = "SELL"
+        else:
+            raise click.BadParameter(f"Unsupported side: {side}", param_hint="side")
+    except InvalidTransaction as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+
+    click.echo(
+        "OK: "
+        f"{side_label} recorded id={tx_id} "
+        f"date={tx_date_normalized} "
+        f"account={account_normalized} "
+        f"symbol={symbol_normalized} "
+        f"qty={format_qty(qty)} "
+        f"unit_price={format_money(price)}"
+    )
 
 def _render_transaction_csv_import_result(result):
     rejected_count = len(result.rejected_rows)
@@ -724,12 +761,12 @@ def cli_import_legacy_positions_csv(csv_path, seed_date, dry_run):
 
 
 @main.command("add-transaction")
-@click.option("--date", "tx_date", default=None)
+@click.option("--tx-date", "--date", "tx_date", default=None, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--account", required=True)
 @click.option("--symbol", required=True)
 @click.option("--side", required=True, type=click.Choice(["buy", "sell"], case_sensitive=False))
 @click.option("--qty", required=True, callback=parse_decimal)
-@click.option("--price", required=True, callback=parse_decimal)
+@click.option("--unit-price", "--price", "price", required=True, callback=parse_decimal)
 @click.option("--fee", default="0", callback=parse_decimal)
 @click.option("--notes", default=None)
 def cli_add_transaction(tx_date, account, symbol, side, qty, price, fee, notes):
@@ -1134,19 +1171,3 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

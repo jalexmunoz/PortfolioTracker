@@ -127,7 +127,7 @@ def test_add_transaction_buy_persists_and_updates_positions(tmp_path, monkeypatc
     )
 
     assert result.exit_code == 0
-    assert "BUY recorded" in result.output
+    assert "OK: BUY recorded id=" in result.output
 
     positions = runner.invoke(main, ["positions"], env=env)
     assert positions.exit_code == 0
@@ -171,7 +171,7 @@ def test_add_transaction_sell_persists_and_reduces_open_position(tmp_path, monke
     )
 
     assert result.exit_code == 0
-    assert "SELL recorded" in result.output
+    assert "OK: SELL recorded id=" in result.output
 
     positions = runner.invoke(main, ["positions"], env=env)
     assert positions.exit_code == 0
@@ -206,6 +206,53 @@ def test_add_transaction_rejects_invalid_side(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "Invalid value for '--side'" in result.output
+
+def test_add_transaction_rejects_non_positive_qty(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_tx_qty_invalid.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        [
+            "add-transaction",
+            "--date", "2026-03-20",
+            "--account", "Main",
+            "--symbol", "BTC",
+            "--side", "buy",
+            "--qty", "0",
+            "--price", "100",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 2
+    assert "Quantity must be positive" in result.output
+
+
+def test_add_transaction_rejects_non_positive_unit_price(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_tx_price_invalid.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        [
+            "add-transaction",
+            "--date", "2026-03-20",
+            "--account", "Main",
+            "--symbol", "BTC",
+            "--side", "buy",
+            "--qty", "1",
+            "--price", "0",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 2
+    assert "Unit price must be positive" in result.output
 
 
 def test_import_transactions_csv_imports_valid_buy(tmp_path, monkeypatch):
