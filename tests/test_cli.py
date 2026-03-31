@@ -2583,3 +2583,95 @@ def test_list_open_lots_output_csv_rejects_empty_path(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "output-csv cannot be empty" in result.output
+
+def test_inspect_lot_matches_cli_sell_tx_id_valid(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_sell.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "1", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'SELL' ORDER BY id ASC LIMIT 1")
+    sell_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", str(sell_id)], env=env)
+
+    assert result.exit_code == 0
+    assert "SellTxID" in result.output
+    assert "BuyTxID" in result.output
+    assert "Realized PnL" in result.output
+    assert "20.00" in result.output
+
+
+def test_inspect_lot_matches_cli_tx_not_found_returns_exit_2(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_missing.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", "9999"], env=env)
+
+    assert result.exit_code == 2
+    assert "ERROR:" in result.output
+    assert "does not exist" in result.output
+
+
+def test_inspect_lot_matches_cli_requires_exactly_one_argument(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_args.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    none_result = runner.invoke(main, ["inspect-lot-matches"], env=env)
+    assert none_result.exit_code == 2
+    assert "exactly one" in none_result.output
+
+    both_result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", "1", "--buy-tx-id", "1"], env=env)
+    assert both_result.exit_code == 2
+    assert "exactly one" in both_result.output
+
+
+def test_inspect_lot_matches_cli_no_matches_message(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_none.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'BUY' ORDER BY id ASC LIMIT 1")
+    buy_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--buy-tx-id", str(buy_id)], env=env)
+
+    assert result.exit_code == 0
+    assert f"No lot matches found for buy_tx_id={buy_id}." in result.output
+
+
+def test_inspect_lot_matches_cli_buy_tx_id_valid(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_buy.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "2", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "1", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'BUY' ORDER BY id ASC LIMIT 1")
+    buy_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--buy-tx-id", str(buy_id)], env=env)
+
+    assert result.exit_code == 0
+    assert "SellTxID" in result.output
+    assert "BuyTxID" in result.output
+    assert "1" in result.output

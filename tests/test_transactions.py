@@ -520,3 +520,94 @@ def test_list_transactions_filters_by_date_range(transaction_svc):
 
     assert len(rows) == 1
     assert rows[0]['id'] == keep_id
+
+def test_inspect_lot_matches_by_sell_tx_id_single_lot(transaction_svc):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    sell_id = transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+
+    rows = transaction_svc.inspect_lot_matches(sell_tx_id=sell_id)
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['sell_tx_id'] == sell_id
+    assert Decimal(str(row['matched_qty'])) == Decimal('1')
+    assert Decimal(str(row['matched_cost_basis'])) == Decimal('100')
+    assert Decimal(str(row['matched_proceeds'])) == Decimal('120')
+    assert Decimal(str(row['matched_realized_pnl'])) == Decimal('20')
+
+
+def test_inspect_lot_matches_by_sell_tx_id_multi_lot_fifo(transaction_svc):
+    buy1 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    buy2 = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('110'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+    sell_id = transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2.5'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-03',
+    )
+
+    rows = transaction_svc.inspect_lot_matches(sell_tx_id=sell_id)
+
+    assert len(rows) == 2
+    assert rows[0]['buy_tx_id'] == buy1
+    assert Decimal(str(rows[0]['matched_qty'])) == Decimal('1')
+    assert rows[1]['buy_tx_id'] == buy2
+    assert Decimal(str(rows[1]['matched_qty'])) == Decimal('1.5')
+
+    total_realized = sum(Decimal(str(r['matched_realized_pnl'])) for r in rows)
+    assert total_realized == Decimal('35')
+
+
+def test_inspect_lot_matches_by_buy_tx_id(transaction_svc):
+    buy_id = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('2'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-01',
+    )
+    sell_id = transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('120'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-03-02',
+    )
+
+    rows = transaction_svc.inspect_lot_matches(buy_tx_id=buy_id)
+
+    assert len(rows) == 1
+    assert rows[0]['buy_tx_id'] == buy_id
+    assert rows[0]['sell_tx_id'] == sell_id

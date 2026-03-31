@@ -417,6 +417,86 @@ class TransactionService:
             )
         return result
 
+
+    def inspect_lot_matches(
+        self,
+        sell_tx_id: Optional[int] = None,
+        buy_tx_id: Optional[int] = None,
+    ):
+        """Inspect lot match rows for one SELL or one BUY transaction id."""
+        if (sell_tx_id is None and buy_tx_id is None) or (sell_tx_id is not None and buy_tx_id is not None):
+            raise InvalidTransaction("Provide exactly one of sell_tx_id or buy_tx_id")
+
+        target_id = sell_tx_id if sell_tx_id is not None else buy_tx_id
+        if target_id is None or int(target_id) <= 0:
+            raise InvalidTransaction("Transaction id must be positive")
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
+        tx_type_expected = "SELL" if sell_tx_id is not None else None
+        if buy_tx_id is not None:
+            tx_type_expected = "BUY_OR_MIGRATION"
+
+        cursor.execute(
+            "SELECT id, tx_type FROM transactions WHERE id = ?",
+            (int(target_id),),
+        )
+        tx_row = cursor.fetchone()
+        if not tx_row:
+            raise InvalidTransaction(f"Transaction id {target_id} does not exist")
+
+        tx_type = tx_row[1]
+        if tx_type_expected == "SELL" and tx_type != "SELL":
+            raise InvalidTransaction(f"Transaction id {target_id} is not a SELL transaction")
+        if tx_type_expected == "BUY_OR_MIGRATION" and tx_type not in ("BUY", "MIGRATION_BUY"):
+            raise InvalidTransaction(f"Transaction id {target_id} is not a BUY/MIGRATION_BUY transaction")
+
+        query = """
+            SELECT
+                lm.sell_tx_id,
+                lm.buy_tx_id,
+                t_buy.tx_date,
+                a.symbol,
+                acc.name,
+                lm.quantity,
+                t_buy.unit_price,
+                (lm.quantity * t_buy.unit_price + lm.buy_fee_alloc) as matched_cost_basis,
+                t_sell.unit_price,
+                (lm.quantity * t_sell.unit_price - lm.sell_fee_alloc) as matched_proceeds,
+                ((lm.quantity * t_sell.unit_price - lm.sell_fee_alloc) - (lm.quantity * t_buy.unit_price + lm.buy_fee_alloc)) as matched_realized_pnl
+            FROM lot_matches lm
+            JOIN transactions t_buy ON t_buy.id = lm.buy_tx_id
+            JOIN transactions t_sell ON t_sell.id = lm.sell_tx_id
+            JOIN assets a ON a.id = t_buy.asset_id
+            JOIN accounts acc ON acc.id = t_buy.account_id
+        """
+
+        if sell_tx_id is not None:
+            query += " WHERE lm.sell_tx_id = ? ORDER BY lm.id ASC"
+            cursor.execute(query, (int(sell_tx_id),))
+        else:
+            query += " WHERE lm.buy_tx_id = ? ORDER BY lm.id ASC"
+            cursor.execute(query, (int(buy_tx_id),))
+
+        rows = cursor.fetchall()
+        return [
+            {
+                "sell_tx_id": row[0],
+                "buy_tx_id": row[1],
+                "buy_tx_date": row[2],
+                "symbol": row[3],
+                "account": row[4],
+                "matched_qty": row[5],
+                "buy_unit_price": row[6],
+                "matched_cost_basis": row[7],
+                "sell_unit_price": row[8],
+                "matched_proceeds": row[9],
+                "matched_realized_pnl": row[10],
+            }
+            for row in rows
+        ]
+
     def delete_transaction(self, tx_id: int) -> dict:
         """
         Delete a transaction by id with minimal consistency rules.

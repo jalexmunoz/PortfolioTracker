@@ -1002,6 +1002,68 @@ def cli_list_open_lots(account, symbol, output_csv):
         table_rows,
     )
 
+
+@main.command("inspect-lot-matches")
+@click.option("--sell-tx-id", "sell_tx_id", default=None, type=click.IntRange(min=1))
+@click.option("--buy-tx-id", "buy_tx_id", default=None, type=click.IntRange(min=1))
+def cli_inspect_lot_matches(sell_tx_id, buy_tx_id):
+    """Inspect raw lot_matches consumption for a specific SELL or BUY lot."""
+    if (sell_tx_id is None and buy_tx_id is None) or (sell_tx_id is not None and buy_tx_id is not None):
+        click.echo("ERROR: provide exactly one of --sell-tx-id or --buy-tx-id", err=True)
+        raise click.exceptions.Exit(2)
+
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+
+    try:
+        rows = svc.inspect_lot_matches(sell_tx_id=sell_tx_id, buy_tx_id=buy_tx_id)
+    except Exception as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+
+    if not rows:
+        if sell_tx_id is not None:
+            click.echo(f"No lot matches found for sell_tx_id={sell_tx_id}.")
+        else:
+            click.echo(f"No lot matches found for buy_tx_id={buy_tx_id}.")
+        return
+
+    table_rows = []
+    for m in rows:
+        table_rows.append(
+            (
+                str(m["sell_tx_id"]),
+                str(m["buy_tx_id"]),
+                str(m["buy_tx_date"]),
+                m["symbol"],
+                m["account"],
+                format_qty(Decimal(str(m["matched_qty"]))),
+                format_money(Decimal(str(m["buy_unit_price"]))),
+                format_money(Decimal(str(m["matched_cost_basis"]))),
+                format_money(Decimal(str(m["sell_unit_price"]))),
+                format_money(Decimal(str(m["matched_proceeds"]))),
+                format_money(Decimal(str(m["matched_realized_pnl"]))),
+            )
+        )
+
+    display_table(
+        [
+            "SellTxID",
+            "BuyTxID",
+            "Buy Date",
+            "Symbol",
+            "Account",
+            "Matched Qty",
+            "Buy Price",
+            "Cost Basis",
+            "Sell Price",
+            "Proceeds",
+            "Realized PnL",
+        ],
+        table_rows,
+    )
+
 @main.command("positions")
 @click.option("--symbol", default=None)
 @click.option("--account", default=None)
