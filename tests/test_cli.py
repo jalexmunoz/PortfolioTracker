@@ -2153,15 +2153,15 @@ BTC,1,100,100,Main
     btc = resolver.resolve("BTC")
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (3900.0, "tradingview", "2026-03-22", gold["id"]),
+        (3900.0, "tradingview", real_date.today().isoformat(), gold["id"]),
     )
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (65.0, "tradingview", "2026-03-22", silver["id"]),
+        (65.0, "tradingview", real_date.today().isoformat(), silver["id"]),
     )
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (120.0, "coingecko", "2026-03-22", btc["id"]),
+        (120.0, "coingecko", real_date.today().isoformat(), btc["id"]),
     )
     conn.commit()
     db.close()
@@ -2213,15 +2213,15 @@ BTC,1,100,100,Main
     btc = resolver.resolve("BTC")
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (3900.0, "tradingview", "2026-03-22", gold["id"]),
+        (3900.0, "tradingview", real_date.today().isoformat(), gold["id"]),
     )
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (65.0, "tradingview", "2026-03-22", silver["id"]),
+        (65.0, "tradingview", real_date.today().isoformat(), silver["id"]),
     )
     cursor.execute(
         "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
-        (120.0, "coingecko", "2026-03-22", btc["id"]),
+        (120.0, "coingecko", real_date.today().isoformat(), btc["id"]),
     )
     conn.commit()
     db.close()
