@@ -2675,3 +2675,116 @@ def test_inspect_lot_matches_cli_buy_tx_id_valid(tmp_path, monkeypatch):
     assert "SellTxID" in result.output
     assert "BuyTxID" in result.output
     assert "1" in result.output
+
+
+def test_inspect_lot_matches_csv_export_by_sell_tx_id(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_sell_csv.db"
+    out_csv = tmp_path / "lot_matches_sell.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "1", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'SELL' ORDER BY id ASC LIMIT 1")
+    sell_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", str(sell_id), "--output-csv", str(out_csv)], env=env)
+
+    assert result.exit_code == 0
+    assert out_csv.exists()
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["sell_tx_id"] == str(sell_id)
+    assert rows[0]["symbol"] == "BTC"
+    assert rows[0]["matched_realized_pnl"] == "20.00"
+
+
+def test_inspect_lot_matches_csv_export_by_buy_tx_id(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_buy_csv.db"
+    out_csv = tmp_path / "lot_matches_buy.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "2", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "1", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'BUY' ORDER BY id ASC LIMIT 1")
+    buy_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--buy-tx-id", str(buy_id), "--output-csv", str(out_csv)], env=env)
+
+    assert result.exit_code == 0
+    assert out_csv.exists()
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["buy_tx_id"] == str(buy_id)
+    assert rows[0]["matched_qty"] == "1"
+
+
+def test_inspect_lot_matches_csv_export_supports_stdout_dash(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_stdout_csv.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-02", "--account", "Test", "--symbol", "BTC", "--side", "sell", "--qty", "1", "--price", "120"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'SELL' ORDER BY id ASC LIMIT 1")
+    sell_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", str(sell_id), "--output-csv", "-"], env=env)
+
+    assert result.exit_code == 0
+    assert "sell_tx_id,buy_tx_id,buy_tx_date,symbol,account,matched_qty,buy_unit_price,matched_cost_basis,sell_unit_price,matched_proceeds,matched_realized_pnl" in result.output
+
+
+def test_inspect_lot_matches_csv_export_rejects_empty_path(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_empty_csv.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["inspect-lot-matches", "--sell-tx-id", "1", "--output-csv", "   "], env=env)
+
+    assert result.exit_code != 0
+    assert "output-csv cannot be empty" in result.output
+
+
+def test_inspect_lot_matches_csv_export_no_matches_writes_header_only(tmp_path, monkeypatch):
+    db_file = tmp_path / "inspect_lot_matches_no_rows_csv.db"
+    out_csv = tmp_path / "lot_matches_empty.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["add-transaction", "--date", "2026-03-01", "--account", "Test", "--symbol", "BTC", "--side", "buy", "--qty", "1", "--price", "100"], env)
+
+    db = Database(str(db_file))
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT id FROM transactions WHERE tx_type = 'BUY' ORDER BY id ASC LIMIT 1")
+    buy_id = cursor.fetchone()[0]
+
+    result = runner.invoke(main, ["inspect-lot-matches", "--buy-tx-id", str(buy_id), "--output-csv", str(out_csv)], env=env)
+
+    assert result.exit_code == 0
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+
+    assert len(rows) == 1
+    assert rows[0][0] == "sell_tx_id"

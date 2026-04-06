@@ -1006,11 +1006,15 @@ def cli_list_open_lots(account, symbol, output_csv):
 @main.command("inspect-lot-matches")
 @click.option("--sell-tx-id", "sell_tx_id", default=None, type=click.IntRange(min=1))
 @click.option("--buy-tx-id", "buy_tx_id", default=None, type=click.IntRange(min=1))
-def cli_inspect_lot_matches(sell_tx_id, buy_tx_id):
+@click.option("--output-csv", "output_csv", default=None)
+def cli_inspect_lot_matches(sell_tx_id, buy_tx_id, output_csv):
     """Inspect raw lot_matches consumption for a specific SELL or BUY lot."""
     if (sell_tx_id is None and buy_tx_id is None) or (sell_tx_id is not None and buy_tx_id is not None):
         click.echo("ERROR: provide exactly one of --sell-tx-id or --buy-tx-id", err=True)
         raise click.exceptions.Exit(2)
+
+    if output_csv is not None and not output_csv.strip():
+        raise click.BadParameter("output-csv cannot be empty", param_hint="output_csv")
 
     db = ensure_db()
     resolver = AssetResolver(db)
@@ -1021,6 +1025,42 @@ def cli_inspect_lot_matches(sell_tx_id, buy_tx_id):
     except Exception as exc:
         click.echo(f"ERROR: {exc}", err=True)
         raise click.exceptions.Exit(2)
+
+    csv_headers = [
+        "sell_tx_id",
+        "buy_tx_id",
+        "buy_tx_date",
+        "symbol",
+        "account",
+        "matched_qty",
+        "buy_unit_price",
+        "matched_cost_basis",
+        "sell_unit_price",
+        "matched_proceeds",
+        "matched_realized_pnl",
+    ]
+    csv_rows = [
+        (
+            str(m["sell_tx_id"]),
+            str(m["buy_tx_id"]),
+            str(m["buy_tx_date"]),
+            m["symbol"],
+            m["account"],
+            format_qty(Decimal(str(m["matched_qty"]))),
+            format_money(Decimal(str(m["buy_unit_price"]))),
+            format_money(Decimal(str(m["matched_cost_basis"]))),
+            format_money(Decimal(str(m["sell_unit_price"]))),
+            format_money(Decimal(str(m["matched_proceeds"]))),
+            format_money(Decimal(str(m["matched_realized_pnl"]))),
+        )
+        for m in rows
+    ]
+
+    if output_csv is not None:
+        _write_csv_output(output_csv, csv_headers, csv_rows)
+        if output_csv.strip() != "-":
+            click.echo(f"CSV exported to {output_csv.strip()} ({len(csv_rows)} row(s))")
+        return
 
     if not rows:
         if sell_tx_id is not None:
