@@ -1,4 +1,4 @@
-﻿# PortfolioTracker v2 - MVP Quickstart
+# PortfolioTracker v2 - MVP Quickstart
 
 Documento canonico de uso operativo del MVP.
 
@@ -12,7 +12,7 @@ Documento canonico de uso operativo del MVP.
 - `daily-report` operativo para corrida diaria con salida humana y JSON.
 
 ## Que NO Hace Todavia
-- GUI.
+- GUI de negocio completa (H2+ pendiente).
 - Reporteria fiscal avanzada.
 - Multi-user / permisos.
 - Wash sales.
@@ -165,3 +165,12 @@ Alcance cubierto en esta linea base:
 Politica de freeze:
 - desde `v0.1.0-mvp`, solo fixes de bugs reales y fricciones reales de uso operativo
 - no agregar features nuevas antes de uso operativo real
+HEAD
+
+
+## GUI Local H1 (estado actual)
+- Disponible una GUI minima local para contexto operativo seguro.
+- Cubre solo: Home, seleccion explicita de DB activa (TEST/PROD) y backup manual.
+- No expone todavia operaciones de negocio del MVP (eso inicia en H2/H3).
+- Ver detalle de arranque en `docs/gui_h1_quickstart.md`.
+f045221 (GUI-H1: add local Flask shell with DB context and manual backup)

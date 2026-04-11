@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>DB Context</h1>
+<p>Define explicitamente la DB activa para esta GUI. No hay fallback silencioso.</p>
+
+<form method="post" class="panel">
+  <label for="db_path">DB path (full path recommended)</label>
+  <input id="db_path" name="db_path" type="text" required placeholder="C:\\imp\\portfolio_tracker_v2\\portfolio.db" value="{{ gui_active_db.db_path if gui_active_db else '' }}">
+
+  <fieldset>
+    <legend>Mode</legend>
+    <label><input type="radio" name="mode" value="TEST" {% if gui_active_db and gui_active_db.mode == 'TEST' %}checked{% endif %} required> TEST</label>
+    <label><input type="radio" name="mode" value="PROD" {% if gui_active_db and gui_active_db.mode == 'PROD' %}checked{% endif %} required> PROD</label>
+  </fieldset>
+
+  <button type="submit">Save active DB</button>
+</form>
+
+<form method="post" action="{{ url_for('gui.db_context_clear') }}" class="panel panel-danger">
+  <p>Clear active DB context.</p>
+  <button type="submit">Clear active DB</button>
+</form>
+{% endblock %}

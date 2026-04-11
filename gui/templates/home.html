@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Home</h1>
+<p>GUI local minima operativa para PortfolioTracker (H1).</p>
+<p>Estado: capa viva con contexto de DB activo y backup manual.</p>
+
+<section>
+  <h2>Scope H1</h2>
+  <ul>
+    <li>Flask local server-rendered.</li>
+    <li>Contexto DB activo con modo TEST/PROD visible.</li>
+    <li>Backup manual timestamped de DB activa.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Not in H1</h2>
+  <ul>
+    <li>No operaciones de negocio (init/import/add/list/report).</li>
+    <li>No restore desde GUI.</li>
+  </ul>
+</section>
+{% endblock %}

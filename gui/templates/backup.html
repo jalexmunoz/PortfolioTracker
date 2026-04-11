@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Manual DB Backup</h1>
+<p>Create a timestamped copy of the active DB.</p>
+<p>Backup directory: <code>{{ backup_root }}</code></p>
+
+{% if gui_active_db %}
+  <form method="post" class="panel">
+    <p>Active DB: <code>{{ gui_active_db.db_path }}</code></p>
+    <p>Mode: <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span></p>
+    <button type="submit">Create backup</button>
+  </form>
+{% else %}
+  <div class="panel panel-danger">
+    <p>No active DB selected. Backup cannot run.</p>
+    <p>Go to <a href="{{ url_for('gui.db_context') }}">Change DB</a> first.</p>
+  </div>
+{% endif %}
+{% endblock %}
