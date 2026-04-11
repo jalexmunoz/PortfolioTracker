@@ -100,3 +100,51 @@ python -m portfolio_tracker_v2 daily-report --account Main
 - `positions`: `--account`, `--symbol`, `--output-csv`.
 - `summary`: `--account`, `--output-json`, `--export-json`, `--export-json-history`.
 - `daily-report`: `--account`, `--skip-refresh`, `--history-dir`, `--output-json`, `--output-json-history-dir`.
+
+## Smoke Test MVP (B45)
+Precondiciones minimas:
+- Ejecutar desde `C:\imp` para usar `python -m portfolio_tracker_v2 ...`.
+- Usar DB temporal de prueba (no productiva) via `PORTFOLIO_DB_PATH`.
+- Contar con snapshot legacy valido (`C:\imp\portfoliototal.csv` en esta validacion).
+
+Comandos ejecutados (flujo feliz end-to-end):
+```powershell
+$env:PORTFOLIO_DB_PATH='C:\imp\portfolio_tracker_v2\tmp_smoke_b45.db'
+if (Test-Path $env:PORTFOLIO_DB_PATH) { Remove-Item $env:PORTFOLIO_DB_PATH -Force }
+
+python -m portfolio_tracker_v2 init-db
+python -m portfolio_tracker_v2 import-legacy-positions-csv C:\imp\portfoliototal.csv --seed-date 2026-04-01
+
+python -m portfolio_tracker_v2 add-transaction --date 2026-04-02 --account Main --symbol BTC --side buy --qty 1 --price 100 --fee 0
+python -m portfolio_tracker_v2 add-transaction --date 2026-04-03 --account Main --symbol BTC --side sell --qty 0.25 --price 120 --fee 0
+
+python -m portfolio_tracker_v2 list-transactions --account Main --symbol BTC --date-from 2026-04-01 --date-to 2026-04-30
+python -m portfolio_tracker_v2 list-open-lots --account Main --symbol BTC
+python -m portfolio_tracker_v2 inspect-lot-matches --sell-tx-id 55
+python -m portfolio_tracker_v2 positions --account Main
+python -m portfolio_tracker_v2 summary --account Main
+python -m portfolio_tracker_v2 daily-report --account Main --skip-refresh --output-json C:\imp\smoke_b45\daily_report_main.json
+
+python -m portfolio_tracker_v2 inspect-lot-matches --sell-tx-id 55 --output-csv C:\imp\smoke_b45\inspect_lot_matches.csv
+python -m portfolio_tracker_v2 summary --account Main --output-json C:\imp\smoke_b45\summary_main.json
+```
+
+Que se valida explicitamente y resultado esperado/resumido:
+1. `init-db` crea schema y assets base: OK.
+2. Import legacy funciona (`Rows processed: 53`, `Seeded OK: 53`, `Rejected: 0`): OK.
+3. BUY manual entra (`id=54`): OK.
+4. SELL manual entra (`id=55`): OK.
+5. FIFO persiste matches en `lot_matches`: OK.
+6. Realized PnL aparece en ledger (`Realized PnL = 5.00` para sell `id=55`): OK.
+7. Open lots reflejan remanente correcto (`Remaining Qty = 0.75`): OK.
+8. `inspect-lot-matches` muestra BUY consumido (`BuyTxID=54` para `SellTxID=55`): OK.
+9. `positions` funciona para `Main/BTC`: OK.
+10. `summary` funciona y refleja `Total cost basis: 75.00`, `Total realized PnL: 5.00`: OK.
+11. `daily-report` funciona (corrida con `--skip-refresh`): OK.
+12. Exports CSV/JSON generan salida no vacia:
+    - `C:\imp\smoke_b45\inspect_lot_matches.csv` (212 bytes)
+    - `C:\imp\smoke_b45\summary_main.json` (759 bytes)
+    - `C:\imp\smoke_b45\daily_report_main.json` (3978 bytes)
+
+Nota operativa:
+- Para experimentar, usar siempre DB temporal/de prueba (`PORTFOLIO_DB_PATH`) para no contaminar la DB real.
