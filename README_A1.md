@@ -148,3 +148,20 @@ Que se valida explicitamente y resultado esperado/resumido:
 
 Nota operativa:
 - Para experimentar, usar siempre DB temporal/de prueba (`PORTFOLIO_DB_PATH`) para no contaminar la DB real.
+
+## Release Baseline (B46)
+Estado de release: esta version queda marcada como MVP interno usable (`v0.1.0-mvp`).
+
+Alcance cubierto en esta linea base:
+- seed import legacy
+- ledger manual BUY/SELL
+- FIFO persistente con `lot_matches`
+- visibilidad de realized PnL
+- open lots
+- auditoria de lot match
+- exports clave CSV/JSON
+- `daily-report` usable
+
+Politica de freeze:
+- desde `v0.1.0-mvp`, solo fixes de bugs reales y fricciones reales de uso operativo
+- no agregar features nuevas antes de uso operativo real
