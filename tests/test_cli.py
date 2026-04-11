@@ -2969,3 +2969,88 @@ def test_summary_output_json_respects_account_filter(tmp_path, monkeypatch):
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["total_cost_basis"] == 100.0
     assert payload["total_equity"] == 200.0
+
+
+def test_daily_report_output_json_contains_b43_minimum_structure(tmp_path, monkeypatch):
+    db_file = tmp_path / "daily_report_b43_structure.db"
+    history_dir = tmp_path / "history"
+    output_json = tmp_path / "daily_report_structured.json"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+    from datetime import datetime
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", datetime.now().isoformat(), btc_asset["id"]),
+    )
+    conn.commit()
+
+    result = runner.invoke(main, ["daily-report", "--history-dir", str(history_dir), "--output-json", str(output_json)], env=env)
+    assert result.exit_code == 0
+
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert "prices" in payload
+    assert "valuation_summary" in payload
+    assert "status" in payload
+    assert payload["status"] in {"OK", "WARN", "ALERT"}
+    assert set(payload["prices"].keys()) == {"updated", "skipped_unsupported", "skipped_unmapped", "failed_final"}
+    assert "usable_non_market_assets" in payload["valuation_summary"]
+    assert "warnings" in payload["valuation_summary"]
+    assert "alerts" in payload["valuation_summary"]
+
+
+def test_daily_report_output_json_stdout_contains_b43_minimum_structure(tmp_path, monkeypatch):
+    db_file = tmp_path / "daily_report_b43_stdout.db"
+    history_dir = tmp_path / "history"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+    from datetime import datetime
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", datetime.now().isoformat(), btc_asset["id"]),
+    )
+    conn.commit()
+
+    result = runner.invoke(main, ["daily-report", "--history-dir", str(history_dir), "--output-json", "-"], env=env)
+    assert result.exit_code == 0
+
+    payload = json.loads(result.output)
+    assert "prices" in payload
+    assert "valuation_summary" in payload
+    assert "status" in payload
+
+
+def test_daily_report_output_json_rejects_empty_path(tmp_path, monkeypatch):
+    db_file = tmp_path / "daily_report_b43_empty.db"
+    history_dir = tmp_path / "history"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["daily-report", "--history-dir", str(history_dir), "--output-json", "   "], env=env)
+
+    assert result.exit_code != 0
+    assert "output-json cannot be empty" in result.output

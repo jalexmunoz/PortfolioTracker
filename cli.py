@@ -1344,6 +1344,8 @@ def cli_pnl(symbol, account):
 @click.option("--output-json-history-dir", "output_json_history_dir", default=None, type=click.Path(file_okay=False), help="Write timestamped structured daily report JSON into a directory.")
 def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output_json, output_json_history_dir):
     """Run the normal daily operational flow in one command."""
+    if output_json is not None and not output_json.strip():
+        raise click.BadParameter("output-json cannot be empty", param_hint="output_json")
     stdout_json_mode = output_json == "-"
     try:
         db = ensure_db()
@@ -1435,6 +1437,31 @@ def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output
                 if alerts:
                     final_exit_code = 1
 
+            counts = summary.get("price_quality_counts", {}) or {}
+            warnings = []
+            stale_count = int(counts.get("stale", 0) or 0)
+            unavailable_count = int(counts.get("unavailable", 0) or 0)
+            if stale_count:
+                warnings.append(f"{stale_count} position(s) have stale prices")
+            if unavailable_count:
+                warnings.append(f"{unavailable_count} position(s) have unavailable prices")
+
+            usable_non_market_assets = []
+            for position in positions:
+                if position.get("valuation_status") == "usable_non_market":
+                    usable_non_market_assets.append(
+                        {
+                            "symbol": position.get("symbol"),
+                            "account": position.get("account"),
+                        }
+                    )
+
+            alert_items = []
+            if alerts_result:
+                alert_items = list(alerts_result.get("alerts") or [])
+
+            status = "ALERT" if alert_items else ("WARN" if warnings else "OK")
+
             output_payload = {
                 "report_type": "daily-report",
                 "report_schema_version": 1,
@@ -1450,6 +1477,18 @@ def cli_daily_report(account, refresh_verbose, history_dir, skip_refresh, output
                 "compare_result": compare_result,
                 "alerts_result": alerts_result,
                 "final_exit_code": final_exit_code,
+                "prices": {
+                    "updated": int((refresh_result or {}).get("updated", 0) or 0),
+                    "skipped_unsupported": int((refresh_result or {}).get("skipped_unsupported", 0) or 0),
+                    "skipped_unmapped": int((refresh_result or {}).get("skipped_unmapped", 0) or 0),
+                    "failed_final": int((refresh_result or {}).get("failed_final", 0) or 0),
+                },
+                "valuation_summary": {
+                    "usable_non_market_assets": usable_non_market_assets,
+                    "warnings": warnings,
+                    "alerts": alert_items,
+                },
+                "status": status,
             }
 
             if output_json and not stdout_json_mode:
