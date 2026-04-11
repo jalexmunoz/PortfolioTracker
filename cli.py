@@ -92,6 +92,44 @@ def _build_summary_export_payload(summary: dict) -> dict:
     }
 
 
+def _build_summary_output_json_payload(summary: dict) -> dict:
+    breakdown = summary.get('asset_class_breakdown', {}) or {}
+    total_equity = Decimal(str(summary.get('total_equity', 0)))
+    breakdown_rows = []
+    for asset_class in ["Crypto", "Equities", "Metals", "Non-market"]:
+        equity = Decimal(str(breakdown.get(asset_class, Decimal('0'))))
+        if total_equity > 0:
+            pct = ((equity / total_equity) * Decimal('100')).quantize(Decimal('0.01'))
+        else:
+            pct = Decimal('0.00')
+        breakdown_rows.append(
+            {
+                'asset_class': asset_class,
+                'equity': _to_json_scalar(equity),
+                'pct': _to_json_scalar(pct),
+            }
+        )
+
+    return {
+        'total_cost_basis': _to_json_scalar(summary['total_cost_basis']),
+        'total_realized_pnl': _to_json_scalar(summary['total_realized_pnl']),
+        'cash_balance': _to_json_scalar(summary['cash_balance']),
+        'total_equity': _to_json_scalar(summary['total_equity']),
+        'market_covered_value': _to_json_scalar(summary['market_covered_value']),
+        'non_market_valued': _to_json_scalar(summary['non_market_valued']),
+        'unvalued_excluded_cost_basis': _to_json_scalar(summary['unvalued_excluded_cost_basis']),
+        'total_unrealized_pnl': _to_json_scalar(summary['total_unrealized_pnl']),
+        'unrealized_return_pct': _to_json_scalar(summary['unrealized_return_pct']),
+        'market_price_quality': {
+            'usable': int(summary['price_quality_counts']['usable']),
+            'stale': int(summary['price_quality_counts']['stale']),
+            'unavailable': int(summary['price_quality_counts']['unavailable']),
+        },
+        'asset_class_breakdown': breakdown_rows,
+    }
+
+
+
 def _build_history_snapshot_path(export_dir: str) -> str:
     timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%SZ')
     return os.path.join(export_dir, f'summary_{timestamp}.json')
@@ -1147,16 +1185,33 @@ def cli_positions(symbol, account, output_csv):
 @click.option("--account", default=None)
 @click.option("--export-json", "export_json", default=None, type=click.Path(dir_okay=False), help="Write summary snapshot to JSON file.")
 @click.option("--export-json-history", "export_json_history", default=None, type=click.Path(file_okay=False), help="Write timestamped summary snapshot JSON into a directory.")
-def cli_summary(account, export_json, export_json_history):
+@click.option("--output-json", "output_json", default=None, type=click.Path(dir_okay=False), help="Write structured summary JSON for automation (use - for stdout).")
+def cli_summary(account, export_json, export_json_history, output_json):
     """Show portfolio summary (cost basis, realized PnL, cash, valuation with usable prices)."""
     db = ensure_db()
     resolver = AssetResolver(db)
     svc = PnLService(db, resolver)
     s = svc.summary(account)
-    if s['total_cost_basis'] == 0 and s['total_realized_pnl'] == 0 and s['cash_balance'] == 0:
-        click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
-    else:
-        _print_summary_block(s)
+
+    if output_json is not None and not output_json.strip():
+        raise click.BadParameter("output-json cannot be empty", param_hint="output_json")
+
+    output_json_mode = output_json is not None
+    stdout_json_mode = output_json == "-"
+
+    if not output_json_mode:
+        if s['total_cost_basis'] == 0 and s['total_realized_pnl'] == 0 and s['cash_balance'] == 0:
+            click.echo("No portfolio data found. Database may be empty. Run 'import-csv --execute' to import data.")
+        else:
+            _print_summary_block(s)
+
+    if output_json_mode:
+        structured_payload = _build_summary_output_json_payload(s)
+        if stdout_json_mode:
+            click.echo(json.dumps(structured_payload, indent=2))
+        else:
+            _write_summary_json_export(output_json, structured_payload)
+            click.echo(f"Summary JSON exported to {output_json}")
 
     payload = None
     if export_json:

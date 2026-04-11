@@ -2855,3 +2855,117 @@ def test_positions_output_csv_no_rows_writes_header_only(tmp_path, monkeypatch):
 
     assert len(rows) == 1
     assert rows[0] == ["symbol", "account", "qty", "avg_cost", "cost_basis", "valuation_method", "valuation_status", "alert"]
+
+
+def test_summary_output_json_writes_structured_file(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    db_file = tmp_path / "summary_output_json.db"
+    output_path = tmp_path / "output" / "summary_structured.json"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", datetime.now().isoformat(), btc_asset["id"]),
+    )
+    conn.commit()
+
+    result = runner.invoke(main, ["summary", "--output-json", str(output_path)], env=env)
+    assert result.exit_code == 0
+    assert f"Summary JSON exported to {output_path}" in result.output
+    assert output_path.exists()
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["total_cost_basis"] == 100.0
+    assert payload["total_equity"] == 200.0
+    assert payload["market_price_quality"]["usable"] == 1
+    assert isinstance(payload["asset_class_breakdown"], list)
+    assert any(r["asset_class"] == "Crypto" for r in payload["asset_class_breakdown"])
+
+
+def test_summary_output_json_stdout_dash(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    db_file = tmp_path / "summary_output_json_stdout.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", datetime.now().isoformat(), btc_asset["id"]),
+    )
+    conn.commit()
+
+    result = runner.invoke(main, ["summary", "--output-json", "-"], env=env)
+    assert result.exit_code == 0
+
+    payload = json.loads(result.output)
+    assert payload["total_cost_basis"] == 100.0
+    assert "market_price_quality" in payload
+    assert "asset_class_breakdown" in payload
+
+
+def test_summary_output_json_rejects_empty_path(tmp_path, monkeypatch):
+    db_file = tmp_path / "summary_output_json_empty.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["summary", "--output-json", "   "], env=env)
+
+    assert result.exit_code != 0
+    assert "output-json cannot be empty" in result.output
+
+
+def test_summary_output_json_respects_account_filter(tmp_path, monkeypatch):
+    from datetime import datetime
+
+    db_file = tmp_path / "summary_output_json_account.db"
+    output_path = tmp_path / "summary_main.json"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+    run_cmd(runner, ["buy", "--symbol", "ETH", "--account", "Alt", "--qty", "1", "--price", "50"], env)
+
+    db = Database(str(db_file))
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    btc_asset = resolver.resolve("BTC")
+    eth_asset = resolver.resolve("ETH")
+    now_iso = datetime.now().isoformat()
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (200.0, "coingecko", now_iso, btc_asset["id"]),
+    )
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (60.0, "coingecko", now_iso, eth_asset["id"]),
+    )
+    conn.commit()
+
+    result = runner.invoke(main, ["summary", "--account", "Main", "--output-json", str(output_path)], env=env)
+    assert result.exit_code == 0
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["total_cost_basis"] == 100.0
+    assert payload["total_equity"] == 200.0
