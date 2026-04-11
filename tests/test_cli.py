@@ -2788,3 +2788,70 @@ def test_inspect_lot_matches_csv_export_no_matches_writes_header_only(tmp_path, 
 
     assert len(rows) == 1
     assert rows[0][0] == "sell_tx_id"
+
+
+def test_positions_output_csv_writes_expected_file(tmp_path, monkeypatch):
+    db_file = tmp_path / "positions_export.db"
+    out_csv = tmp_path / "positions.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    result = runner.invoke(main, ["positions", "--output-csv", str(out_csv)], env=env)
+
+    assert result.exit_code == 0
+    assert out_csv.exists()
+
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "BTC"
+    assert rows[0]["account"] == "Main"
+    assert rows[0]["qty"] == "1"
+
+
+def test_positions_output_csv_supports_stdout_dash(tmp_path, monkeypatch):
+    db_file = tmp_path / "positions_export_stdout.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    run_cmd(runner, ["buy", "--symbol", "BTC", "--account", "Main", "--qty", "1", "--price", "100"], env)
+
+    result = runner.invoke(main, ["positions", "--output-csv", "-"], env=env)
+
+    assert result.exit_code == 0
+    assert "symbol,account,qty,avg_cost,cost_basis,valuation_method,valuation_status,alert" in result.output
+    assert "BTC,Main,1,100.00,100.00" in result.output
+
+
+def test_positions_output_csv_rejects_empty_path(tmp_path, monkeypatch):
+    db_file = tmp_path / "positions_export_empty.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["positions", "--output-csv", "   "], env=env)
+
+    assert result.exit_code != 0
+    assert "output-csv cannot be empty" in result.output
+
+
+def test_positions_output_csv_no_rows_writes_header_only(tmp_path, monkeypatch):
+    db_file = tmp_path / "positions_export_empty_rows.db"
+    out_csv = tmp_path / "positions_empty.csv"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(main, ["positions", "--output-csv", str(out_csv)], env=env)
+
+    assert result.exit_code == 0
+    with out_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+
+    assert len(rows) == 1
+    assert rows[0] == ["symbol", "account", "qty", "avg_cost", "cost_basis", "valuation_method", "valuation_status", "alert"]

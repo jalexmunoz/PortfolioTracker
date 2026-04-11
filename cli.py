@@ -1107,7 +1107,8 @@ def cli_inspect_lot_matches(sell_tx_id, buy_tx_id, output_csv):
 @main.command("positions")
 @click.option("--symbol", default=None)
 @click.option("--account", default=None)
-def cli_positions(symbol, account):
+@click.option("--output-csv", "output_csv", default=None)
+def cli_positions(symbol, account, output_csv):
     """Show open position quantities."""
     db = ensure_db()
     resolver = AssetResolver(db)
@@ -1127,6 +1128,15 @@ def cli_positions(symbol, account):
             p['valuation_status'],
             p['alert'],
         ))
+    csv_headers = ["symbol", "account", "qty", "avg_cost", "cost_basis", "valuation_method", "valuation_status", "alert"]
+    csv_rows = list(rows)
+
+    if output_csv is not None:
+        _write_csv_output(output_csv, csv_headers, csv_rows)
+        if output_csv.strip() != "-":
+            click.echo(f"CSV exported to {output_csv.strip()} ({len(csv_rows)} row(s))")
+        return
+
     if rows:
         display_table(["Symbol", "Account", "Qty", "Avg Cost", "Cost Basis", "Val Method", "Val Status", "Alert"], rows)
     else:
