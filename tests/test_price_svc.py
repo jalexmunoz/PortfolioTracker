@@ -512,11 +512,14 @@ def test_resolve_provider_gld_routes_to_alpha_vantage():
     assert resolution.provider_symbol == 'GLD'
 
 
-def test_resolve_provider_slv_routes_to_alpha_vantage():
+def test_resolve_provider_slv_routes_to_tradingview_amex():
+    # SLV: AV free tier returns no data; overridden to TradingView AMEX
     resolution = resolve_provider('SLV', 'stock_us')
     assert resolution.status == 'ok'
-    assert resolution.provider == 'alpha_vantage'
+    assert resolution.provider == 'tradingview'
     assert resolution.provider_symbol == 'SLV'
+    assert resolution.exchange == 'AMEX'
+    assert resolution.price_source == 'tradingview_amex_etf'
 
 
 def test_asset_resolver_creates_gld_as_stock_us(db):
@@ -559,3 +562,24 @@ def test_asset_resolver_heals_slv_unknown_to_stock_us(db):
     asset = resolver.resolve('SLV')
     assert asset['asset_type'] == 'stock_us'
     assert asset['valuation_method'] == 'market_live'
+
+
+def test_refresh_prices_slv_uses_tradingview(db):
+    add_active_holding(db, 'SLV', 'stock_us')
+
+    filled_df = pd.DataFrame([{"open": 69.0, "high": 69.5, "low": 68.8, "close": 69.1, "volume": 1.0}])
+    with patch("portfolio_tracker_v2.services.tradingview_fetcher.get_tradingview_ohlc") as mock_tv:
+        mock_tv.return_value = filled_df
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "tradingview"
+    assert report.results[0].provider_symbol == "SLV"
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'SLV'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(69.1)
+    assert row[1] == "tradingview_amex_etf"

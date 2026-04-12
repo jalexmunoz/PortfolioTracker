@@ -49,6 +49,11 @@ TRADINGVIEW_STOCK_INTL_MAP = {
     "PEI": {"tradingview_symbol": "PEI", "exchange": "BVC", "currency": "COP", "divisor": 1.0},
 }
 
+# US ETFs where Alpha Vantage free tier returns no data; fetched via TradingView instead.
+TRADINGVIEW_US_ETF_MAP = {
+    "SLV": {"tradingview_symbol": "SLV", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
+}
+
 
 @dataclass(frozen=True)
 class PriceLookupResult:
@@ -233,6 +238,17 @@ def resolve_provider(symbol: str, asset_type: str) -> ProviderResolution:
         )
 
     if asset_type == "stock_us":
+        etf_metadata = TRADINGVIEW_US_ETF_MAP.get(symbol)
+        if etf_metadata:
+            return ProviderResolution(
+                status="ok",
+                provider="tradingview",
+                provider_symbol=etf_metadata["tradingview_symbol"],
+                price_source="tradingview_amex_etf",
+                exchange=etf_metadata["exchange"],
+                currency=etf_metadata["currency"],
+                divisor=float(etf_metadata["divisor"]),
+            )
         av_symbol = resolve_alpha_vantage_stock_symbol(symbol)
         if not av_symbol:
             return ProviderResolution(status="unmapped", provider="alpha_vantage", reason="unmapped_symbol")
@@ -297,6 +313,9 @@ def lookup_price(resolution: ProviderResolution) -> PriceLookupResult:
         return get_alpha_vantage_stock_price(resolution.provider_symbol or "")
 
     if resolution.provider == "tradingview" and resolution.price_source == "tradingview_tvc_spot":
+        return get_tradingview_commodity_price(resolution)
+
+    if resolution.provider == "tradingview" and resolution.price_source == "tradingview_amex_etf":
         return get_tradingview_commodity_price(resolution)
 
     if resolution.provider == "tradingview" and resolution.price_source == "tradingview_bvc_fx":
