@@ -566,6 +566,8 @@ class PnLService:
 
         cash = self.cash_balance(account)
         total_unrealized_pnl = total_equity - valued_cost_basis
+        total_equity += cash
+        asset_class_breakdown['Cash'] = cash
         unrealized_return_pct = None
         if valued_cost_basis > 0:
             unrealized_return_pct = ((total_unrealized_pnl / valued_cost_basis) * 100).quantize(Decimal('0.01'))

@@ -684,7 +684,7 @@ def test_summary_export_json_writes_snapshot_file(tmp_path, monkeypatch):
 
     result = runner.invoke(main, ["summary", "--export-json", str(export_path)], env=env)
     assert result.exit_code == 0
-    assert "Total Equity: 200.00" in result.output
+    assert "Total Equity: 100.00" in result.output
     assert f"Summary exported to {export_path}" in result.output
 
     assert export_path.exists()
@@ -694,7 +694,7 @@ def test_summary_export_json_writes_snapshot_file(tmp_path, monkeypatch):
     assert payload["total_cost_basis"] == 100.0
     assert payload["total_realized_pnl"] == 0.0
     assert payload["cash_balance"] == -100.0
-    assert payload["total_equity"] == 200.0
+    assert payload["total_equity"] == 100.0
     assert payload["market_covered_value"] == 200.0
     assert payload["non_market_valued"] == 0.0
     assert payload["unvalued_excluded_cost_basis"] == 0.0
@@ -733,7 +733,7 @@ def test_summary_export_json_history_writes_timestamped_snapshot(tmp_path, monke
 
     result = runner.invoke(main, ["summary", "--export-json-history", str(history_dir)], env=env)
     assert result.exit_code == 0
-    assert "Total Equity: 200.00" in result.output
+    assert "Total Equity: 100.00" in result.output
     assert "Summary history snapshot exported to" in result.output
 
     files = list(history_dir.glob("summary_*.json"))
@@ -742,8 +742,9 @@ def test_summary_export_json_history_writes_timestamped_snapshot(tmp_path, monke
 
     payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert "generated_at" in payload
-    assert payload["total_equity"] == 200.0
+    assert payload["total_equity"] == 100.0
     assert payload["asset_class_breakdown"]["Crypto"] == 200.0
+    assert payload["asset_class_breakdown"]["Cash"] == -100.0
 
 
 def test_validate_daily_report_json_valid_file(tmp_path, monkeypatch):
@@ -1110,7 +1111,7 @@ def test_daily_report_without_previous_snapshot(tmp_path, monkeypatch):
     assert "Refresh" in result.output
     assert "Summary" in result.output
     assert "Timestamp:" in result.output
-    assert "Total Equity: 200.00" in result.output
+    assert "Total Equity: 100.00" in result.output
     assert "Cash balance: -100.00" in result.output
     assert "Total market value: 200.00" in result.output
     assert "Realized PnL: 0.00" in result.output
@@ -1154,15 +1155,15 @@ def test_daily_report_with_previous_snapshot_runs_compare_and_alerts(tmp_path, m
         "generated_at": "2026-03-15T10:00:00Z",
         "total_cost_basis": 100.0,
         "total_realized_pnl": 0.0,
-        "cash_balance": 0.0,
-        "total_equity": 190.0,
-        "market_covered_value": 190.0,
+        "cash_balance": -100.0,
+        "total_equity": 98.0,
+        "market_covered_value": 198.0,
         "non_market_valued": 0.0,
         "unvalued_excluded_cost_basis": 0.0,
-        "total_unrealized_pnl_approved": 90.0,
-        "unrealized_return_pct_approved": 90.0,
+        "total_unrealized_pnl_approved": 98.0,
+        "unrealized_return_pct_approved": 98.0,
         "market_price_quality": {"usable": 1, "stale": 0, "unavailable": 0},
-        "asset_class_breakdown": {"Crypto": 190.0, "Equities": 0.0, "Metals": 0.0, "Non-market": 0.0},
+        "asset_class_breakdown": {"Crypto": 198.0, "Equities": 0.0, "Metals": 0.0, "Non-market": 0.0, "Cash": -100.0},
     }
     (history_dir / "summary_2026-03-15T10-00-00Z.json").write_text(json.dumps(previous_payload, indent=2), encoding="utf-8")
 
@@ -1426,7 +1427,7 @@ def test_daily_report_output_json_without_previous_snapshot(tmp_path, monkeypatc
     assert payload["compare_result"] is None
     assert payload["alerts_result"] is None
     assert payload["final_exit_code"] == 0
-    assert payload["summary_result"]["total_equity"] == 200.0
+    assert payload["summary_result"]["total_equity"] == 100.0
     assert list(output_json.parent.glob(".tmp_*.json")) == []
 
 
@@ -1466,7 +1467,7 @@ def test_daily_report_output_json_history_dir_creates_timestamped_report(tmp_pat
     assert ":" not in files[0].name
     payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["report_type"] == "daily-report"
-    assert payload["summary_result"]["total_equity"] == 200.0
+    assert payload["summary_result"]["total_equity"] == 100.0
     assert list(output_json_history_dir.glob(".tmp_*.json")) == []
 
 
@@ -1571,15 +1572,15 @@ def test_daily_report_output_json_with_previous_snapshot(tmp_path, monkeypatch):
         "generated_at": "2026-03-15T10:00:00Z",
         "total_cost_basis": 100.0,
         "total_realized_pnl": 0.0,
-        "cash_balance": 0.0,
-        "total_equity": 190.0,
-        "market_covered_value": 190.0,
+        "cash_balance": -100.0,
+        "total_equity": 98.0,
+        "market_covered_value": 198.0,
         "non_market_valued": 0.0,
         "unvalued_excluded_cost_basis": 0.0,
-        "total_unrealized_pnl_approved": 90.0,
-        "unrealized_return_pct_approved": 90.0,
+        "total_unrealized_pnl_approved": 98.0,
+        "unrealized_return_pct_approved": 98.0,
         "market_price_quality": {"usable": 1, "stale": 0, "unavailable": 0},
-        "asset_class_breakdown": {"Crypto": 190.0, "Equities": 0.0, "Metals": 0.0, "Non-market": 0.0},
+        "asset_class_breakdown": {"Crypto": 198.0, "Equities": 0.0, "Metals": 0.0, "Non-market": 0.0, "Cash": -100.0},
     }
     (history_dir / "summary_2026-03-15T10-00-00Z.json").write_text(json.dumps(previous_payload, indent=2), encoding="utf-8")
 
@@ -1591,8 +1592,8 @@ def test_daily_report_output_json_with_previous_snapshot(tmp_path, monkeypatch):
     payload = json.loads(output_json.read_text(encoding="utf-8"))
     assert payload["previous_snapshot_path"] is not None
     assert payload["compare_result"] is not None
-    assert payload["compare_result"]["metrics"]["total_equity"]["old"] == 190.0
-    assert payload["compare_result"]["metrics"]["total_equity"]["new"] == 200.0
+    assert payload["compare_result"]["metrics"]["total_equity"]["old"] == 98.0
+    assert payload["compare_result"]["metrics"]["total_equity"]["new"] == 100.0
     assert payload["alerts_result"]["status"] == "OK"
 
 
@@ -1717,7 +1718,7 @@ def test_daily_report_output_json_stdout_emits_valid_json_only(tmp_path, monkeyp
     assert "Structured daily report exported to" not in result.output
     payload = json.loads(result.output)
     assert payload["final_exit_code"] == 0
-    assert payload["summary_result"]["total_equity"] == 200.0
+    assert payload["summary_result"]["total_equity"] == 100.0
 
 
 def test_daily_report_output_json_stdout_exit_code_1_with_alerts(tmp_path, monkeypatch):
@@ -1806,7 +1807,7 @@ def test_summary_with_valuation(tmp_path, monkeypatch):
     result = runner.invoke(main, ["summary"], env=env)
     assert result.exit_code == 0
     assert "Total cost basis: 100.00" in result.output
-    assert "Total Equity: 200.00" in result.output
+    assert "Total Equity: 100.00" in result.output
     assert "Market-Covered Value: 200.00" in result.output
     assert "Non-Market Valued: 0.00" in result.output
     assert "Unvalued / Excluded (cost basis): 0.00" in result.output
@@ -1814,7 +1815,7 @@ def test_summary_with_valuation(tmp_path, monkeypatch):
     assert "Unrealized return % (approved valuations): 100.00%" in result.output
     assert "Market price quality: 1 usable" in result.output
     assert "Asset class breakdown (approved equity):" in result.output
-    assert "Crypto: 200.00 (100.00%)" in result.output
+    assert "Crypto: 200.00 (200.00%)" in result.output
     assert "Equities: 0.00 (0.00%)" in result.output
     assert "Metals: 0.00 (0.00%)" in result.output
     assert "Non-market: 0.00 (0.00%)" in result.output
@@ -2886,10 +2887,11 @@ def test_summary_output_json_writes_structured_file(tmp_path, monkeypatch):
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["total_cost_basis"] == 100.0
-    assert payload["total_equity"] == 200.0
+    assert payload["total_equity"] == 100.0
     assert payload["market_price_quality"]["usable"] == 1
     assert isinstance(payload["asset_class_breakdown"], list)
     assert any(r["asset_class"] == "Crypto" for r in payload["asset_class_breakdown"])
+    assert any(r["asset_class"] == "Cash" for r in payload["asset_class_breakdown"])
 
 
 def test_summary_output_json_stdout_dash(tmp_path, monkeypatch):
@@ -2968,7 +2970,7 @@ def test_summary_output_json_respects_account_filter(tmp_path, monkeypatch):
 
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["total_cost_basis"] == 100.0
-    assert payload["total_equity"] == 200.0
+    assert payload["total_equity"] == 100.0
 
 
 def test_daily_report_output_json_contains_b43_minimum_structure(tmp_path, monkeypatch):
@@ -3189,7 +3191,7 @@ def test_add_fund_movement_reflects_legacy_plus_manual_balance_without_artificia
 
     summary = runner.invoke(main, ["summary", "--account", "Trii"], env=env)
     assert summary.exit_code == 0
-    assert "Total Equity: 513.25" in summary.output
+    assert "Total Equity: 263.25" in summary.output
     assert "Non-Market Valued: 513.25" in summary.output
 
 

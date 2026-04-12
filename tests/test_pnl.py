@@ -391,6 +391,8 @@ def test_cash_balance_and_summary(services):
 
     summary = pnl_svc.summary(account='Main')
     assert summary['cash_balance'] == Decimal('990')
+    assert summary['total_equity'] == Decimal('990')
+    assert summary['asset_class_breakdown']['Cash'] == Decimal('990')
 
 
 def test_positions_unrealized_gain_alerts(services):
@@ -494,7 +496,7 @@ def test_summary_with_valuation(services):
     assert s['total_cost_basis'] == Decimal('300')
     assert s['total_realized_pnl'] == Decimal('0')
     assert s['cash_balance'] == Decimal('-300')
-    assert s['total_equity'] == Decimal('200')
+    assert s['total_equity'] == Decimal('-100')
     assert s['market_covered_value'] == Decimal('200')
     assert s['non_market_valued'] == Decimal('0')
     assert s['unvalued_excluded_cost_basis'] == Decimal('200')
@@ -506,6 +508,7 @@ def test_summary_with_valuation(services):
     assert s['asset_class_breakdown']['Equities'] == Decimal('0')
     assert s['asset_class_breakdown']['Metals'] == Decimal('0')
     assert s['asset_class_breakdown']['Non-market'] == Decimal('0')
+    assert s['asset_class_breakdown']['Cash'] == Decimal('-300')
 
 
 def test_price_quality_classification(services):
@@ -566,16 +569,19 @@ def test_summary_hybrid_valuation_methods(services):
         summary = pnl_svc.summary(account='Main')
 
     expected_bbva = Decimal('100') * (Decimal('1') + Decimal('0.092') * Decimal('80') / Decimal('365'))
-    expected_total_equity = expected_bbva + Decimal('100')
+    expected_positions_equity = expected_bbva + Decimal('100')
+    expected_cash = Decimal('-225')
+    expected_total_equity = expected_positions_equity + expected_cash
     assert summary['total_equity'] == expected_total_equity
     assert summary['market_covered_value'] == Decimal('0')
-    assert summary['non_market_valued'] == expected_total_equity
+    assert summary['non_market_valued'] == expected_positions_equity
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
     assert summary['unvalued_positions'] == 0
-    assert summary['asset_class_breakdown']['Non-market'] == expected_total_equity
+    assert summary['asset_class_breakdown']['Non-market'] == expected_positions_equity
     assert summary['asset_class_breakdown']['Crypto'] == Decimal('0')
     assert summary['asset_class_breakdown']['Equities'] == Decimal('0')
     assert summary['asset_class_breakdown']['Metals'] == Decimal('0')
+    assert summary['asset_class_breakdown']['Cash'] == expected_cash
 
 
 def test_positions_and_summary_exclude_inactive_assets(services):
@@ -601,5 +607,6 @@ def test_positions_and_summary_exclude_inactive_assets(services):
     summary = pnl_svc.summary(account='Main')
     assert summary['total_cost_basis'] == Decimal('100')
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
-    assert summary['total_equity'] == Decimal('200')
+    assert summary['total_equity'] == Decimal('75')
+    assert summary['asset_class_breakdown']['Cash'] == Decimal('-125')
     assert sum(summary['asset_class_breakdown'].values()) == summary['total_equity']

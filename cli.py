@@ -100,6 +100,7 @@ def _build_summary_export_payload(summary: dict) -> dict:
             'Equities': _to_json_scalar(breakdown.get('Equities', Decimal('0'))),
             'Metals': _to_json_scalar(breakdown.get('Metals', Decimal('0'))),
             'Non-market': _to_json_scalar(breakdown.get('Non-market', Decimal('0'))),
+            'Cash': _to_json_scalar(breakdown.get('Cash', Decimal('0'))),
         },
     }
 
@@ -108,7 +109,7 @@ def _build_summary_output_json_payload(summary: dict) -> dict:
     breakdown = summary.get('asset_class_breakdown', {}) or {}
     total_equity = Decimal(str(summary.get('total_equity', 0)))
     breakdown_rows = []
-    for asset_class in ["Crypto", "Equities", "Metals", "Non-market"]:
+    for asset_class in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
         equity = Decimal(str(breakdown.get(asset_class, Decimal('0'))))
         if total_equity > 0:
             pct = ((equity / total_equity) * Decimal('100')).quantize(Decimal('0.01'))
@@ -334,7 +335,7 @@ def _print_summary_block(summary: dict) -> None:
 
     breakdown = summary.get('asset_class_breakdown', {})
     click.echo("Asset class breakdown (approved equity):")
-    for cls in ["Crypto", "Equities", "Metals", "Non-market"]:
+    for cls in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
         value = breakdown.get(cls, Decimal('0'))
         if summary['total_equity'] > 0:
             pct = ((value / summary['total_equity']) * 100).quantize(Decimal('0.01'))
