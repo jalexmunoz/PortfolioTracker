@@ -3054,3 +3054,116 @@ def test_daily_report_output_json_rejects_empty_path(tmp_path, monkeypatch):
 
     assert result.exit_code != 0
     assert "output-json cannot be empty" in result.output
+
+
+def test_add_cdt_manual_reflects_positions_and_summary(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_cdt_manual.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    result = runner.invoke(
+        main,
+        [
+            "add-cdt",
+            "--account", "BBVA",
+            "--symbol", "BBVA CDT",
+            "--open-date", "2026-04-11",
+            "--maturity-date", "2026-10-11",
+            "--principal", "5000",
+            "--term", "0.5",
+            "--rate", "0.10",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 0
+    assert "OK: CDT recorded id=" in result.output
+
+    positions = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
+    assert positions.exit_code == 0
+    assert "BBVA CDT" in positions.output
+    assert "contractual_value" in positions.output
+    assert "usable_non_market" in positions.output
+
+    summary = runner.invoke(main, ["summary", "--account", "BBVA"], env=env)
+    assert summary.exit_code == 0
+    assert "Total Equity: 5,250.00" in summary.output
+    assert "Non-Market Valued: 5,250.00" in summary.output
+
+
+def test_add_cdt_rejects_invalid_date_order(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_cdt_invalid_dates.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    result = runner.invoke(
+        main,
+        [
+            "add-cdt",
+            "--account", "BBVA",
+            "--symbol", "BBVA CDT",
+            "--open-date", "2026-10-11",
+            "--maturity-date", "2026-04-11",
+            "--principal", "5000",
+            "--term", "0.5",
+            "--rate", "0.10",
+        ],
+        env=env,
+    )
+
+    assert result.exit_code == 2
+    assert "maturity-date must be after open-date" in result.output
+
+
+def test_add_fund_movement_reflects_positions_and_summary(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_fund_movement.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    contribution = runner.invoke(
+        main,
+        [
+            "add-fund-movement",
+            "--account", "Trii",
+            "--symbol", "FONDO DINAMICO",
+            "--date", "2026-04-11",
+            "--movement-type", "CONTRIBUTION",
+            "--amount", "300",
+        ],
+        env=env,
+    )
+    assert contribution.exit_code == 0
+    assert "OK: FUND movement recorded id=" in contribution.output
+
+    withdrawal = runner.invoke(
+        main,
+        [
+            "add-fund-movement",
+            "--account", "Trii",
+            "--symbol", "FONDO DINAMICO",
+            "--date", "2026-04-20",
+            "--movement-type", "WITHDRAWAL",
+            "--amount", "50",
+        ],
+        env=env,
+    )
+    assert withdrawal.exit_code == 0
+
+    positions = runner.invoke(main, ["positions", "--account", "Trii"], env=env)
+    assert positions.exit_code == 0
+    assert "FONDO DINAMICO" in positions.output
+    assert "250" in positions.output
+    assert "snapshot_imported" in positions.output
+    assert "usable_non_market" in positions.output
+
+    summary = runner.invoke(main, ["summary", "--account", "Trii"], env=env)
+    assert summary.exit_code == 0
+    assert "Total Equity: 250.00" in summary.output
+    assert "Non-Market Valued: 250.00" in summary.output
+
+    # Negative-balance rejection path is asserted at service level in test_transactions.py.

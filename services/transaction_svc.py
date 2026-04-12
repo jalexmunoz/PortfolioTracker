@@ -1,7 +1,9 @@
 """
 Transaction service: record buys/sells with FIFO matching.
 """
-from decimal import Decimal
+import json
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from portfolio_tracker_v2.core import Database
@@ -15,6 +17,9 @@ class TransactionService:
 
     Handles FIFO lot matching for sells against open buy positions.
     """
+    CDT_CONTRACT_NOTE_PREFIX = "CDT_CONTRACT_V1:"
+    FUND_MOVEMENT_TYPES = {"CONTRIBUTION", "WITHDRAWAL"}
+
 
     def __init__(self, db: Database, resolver: AssetResolver):
         """
@@ -49,6 +54,65 @@ class TransactionService:
         # Insert within transaction; caller commits
         cursor.execute("INSERT INTO accounts (name) VALUES (?)", (name,))
         return cursor.lastrowid
+
+    def _parse_iso_date(self, value: str, field_name: str) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            raise InvalidTransaction(f"{field_name} is required")
+        try:
+            return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+        except ValueError as exc:
+            raise InvalidTransaction(f"{field_name} must use YYYY-MM-DD format") from exc
+
+    def _open_qty_for_asset_account(self, cursor, asset_id: int, account_id: int) -> Decimal:
+        cursor.execute(
+            """
+            WITH buy_qty AS (
+                SELECT COALESCE(SUM(quantity), 0) AS total
+                FROM transactions
+                WHERE asset_id = ? AND account_id = ? AND tx_type IN ('BUY', 'MIGRATION_BUY')
+            ),
+            sell_qty AS (
+                SELECT COALESCE(SUM(quantity), 0) AS total
+                FROM transactions
+                WHERE asset_id = ? AND account_id = ? AND tx_type = 'SELL'
+            )
+            SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
+            """,
+            (asset_id, account_id, asset_id, account_id),
+        )
+        row = cursor.fetchone()
+        return Decimal(str(row[0] if row else 0))
+
+    def _set_asset_non_market_valuation(
+        self,
+        cursor,
+        asset_id: int,
+        valuation_method: str,
+        current_price: Decimal | None = None,
+        price_source: str | None = None,
+        price_updated_at: str | None = None,
+    ) -> None:
+        cursor.execute(
+            """
+            UPDATE assets
+            SET valuation_method = ?,
+                current_price = CASE WHEN ? IS NULL THEN current_price ELSE ? END,
+                price_source = CASE WHEN ? IS NULL THEN price_source ELSE ? END,
+                price_updated_at = CASE WHEN ? IS NULL THEN price_updated_at ELSE ? END
+            WHERE id = ?
+            """,
+            (
+                valuation_method,
+                None if current_price is None else float(current_price),
+                None if current_price is None else float(current_price),
+                price_source,
+                price_source,
+                price_updated_at,
+                price_updated_at,
+                asset_id,
+            ),
+        )
 
     def record_buy(
         self,
@@ -254,6 +318,173 @@ class TransactionService:
 
             conn.commit()
             return sell_tx_id
+        except Exception:
+            conn.rollback()
+            raise
+
+    def record_cdt(
+        self,
+        account: str,
+        symbol: str,
+        open_date: str,
+        maturity_date: str,
+        principal: Decimal,
+        term_years: Decimal,
+        annual_rate: Decimal,
+        notes: Optional[str] = None,
+    ) -> int:
+        """Record one manual CDT contract as one BUY lot with contractual metadata."""
+        account_name = (account or "").strip()
+        if not account_name:
+            raise InvalidTransaction("account cannot be empty")
+
+        symbol_name = (symbol or "").strip().upper()
+        if not symbol_name:
+            raise InvalidTransaction("symbol cannot be empty")
+
+        if principal <= 0:
+            raise InvalidTransaction("principal must be positive")
+        if annual_rate < 0:
+            raise InvalidTransaction("rate cannot be negative")
+        if term_years <= 0:
+            raise InvalidTransaction("term must be positive (years)")
+
+        open_date_iso = self._parse_iso_date(open_date, "open_date")
+        maturity_date_iso = self._parse_iso_date(maturity_date, "maturity_date")
+        open_date_obj = datetime.strptime(open_date_iso, "%Y-%m-%d").date()
+        maturity_date_obj = datetime.strptime(maturity_date_iso, "%Y-%m-%d").date()
+        if maturity_date_obj <= open_date_obj:
+            raise InvalidTransaction("maturity_date must be after open_date")
+
+        expected_term_years = Decimal(str((maturity_date_obj - open_date_obj).days)) / Decimal("365")
+        if abs(expected_term_years - term_years) > Decimal("0.20"):
+            raise InvalidTransaction(
+                "term is inconsistent with open_date/maturity_date (expected approximately "
+                f"{expected_term_years.quantize(Decimal('0.01'))} years)"
+            )
+
+        contract_payload = {
+            "open_date": open_date_iso,
+            "maturity_date": maturity_date_iso,
+            "principal": str(principal),
+            "term_years": str(term_years),
+            "annual_rate": str(annual_rate),
+        }
+        payload_notes = f"{self.CDT_CONTRACT_NOTE_PREFIX}{json.dumps(contract_payload, separators=(',', ':'))}"
+        extra_notes = (notes or "").strip()
+        stored_notes = payload_notes if not extra_notes else f"{payload_notes} | {extra_notes}"
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            asset = self.resolver.resolve(symbol_name)
+            account_id = self._get_or_create_account(account_name, cursor)
+            open_qty = self._open_qty_for_asset_account(cursor, asset["id"], account_id)
+            if open_qty > 0:
+                raise InvalidTransaction(
+                    f"{symbol_name} already has an open position for account {account_name}; "
+                    "close it before adding a new manual CDT"
+                )
+
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset["id"],
+                    account_id,
+                    "BUY",
+                    1.0,
+                    float(principal),
+                    0.0,
+                    float(principal),
+                    open_date_iso,
+                    stored_notes,
+                ),
+            )
+            tx_id = cursor.lastrowid
+            self._set_asset_non_market_valuation(
+                cursor,
+                asset_id=asset["id"],
+                valuation_method="contractual_value",
+            )
+            conn.commit()
+            return tx_id
+        except Exception:
+            conn.rollback()
+            raise
+
+    def record_fund_movement(
+        self,
+        account: str,
+        symbol: str,
+        movement_date: str,
+        amount: Decimal,
+        movement_type: str,
+        notes: Optional[str] = None,
+    ) -> int:
+        """Record one non-market fund movement using BUY/SELL semantics with unit_price=1."""
+        account_name = (account or "").strip()
+        if not account_name:
+            raise InvalidTransaction("account cannot be empty")
+
+        symbol_name = (symbol or "").strip().upper()
+        if not symbol_name:
+            raise InvalidTransaction("symbol cannot be empty")
+
+        movement_type_normalized = (movement_type or "").strip().upper()
+        if movement_type_normalized not in self.FUND_MOVEMENT_TYPES:
+            raise InvalidTransaction("movement_type must be CONTRIBUTION or WITHDRAWAL")
+
+        movement_date_iso = self._parse_iso_date(movement_date, "date")
+        try:
+            amount_dec = Decimal(str(amount))
+        except (InvalidOperation, TypeError) as exc:
+            raise InvalidTransaction("amount must be numeric") from exc
+        if amount_dec <= 0:
+            raise InvalidTransaction("amount must be positive")
+
+        movement_note = f"FUND_{movement_type_normalized}"
+        user_note = (notes or "").strip()
+        stored_notes = movement_note if not user_note else f"{movement_note} | {user_note}"
+
+        if movement_type_normalized == "CONTRIBUTION":
+            tx_id = self.record_buy(
+                symbol=symbol_name,
+                account=account_name,
+                qty=amount_dec,
+                unit_price=Decimal("1"),
+                fee_usd=Decimal("0"),
+                tx_date=movement_date_iso,
+                notes=stored_notes,
+            )
+        else:
+            tx_id = self.record_sell(
+                symbol=symbol_name,
+                account=account_name,
+                qty=amount_dec,
+                unit_price=Decimal("1"),
+                fee_usd=Decimal("0"),
+                tx_date=movement_date_iso,
+                notes=stored_notes,
+            )
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            asset = self.resolver.resolve(symbol_name)
+            self._set_asset_non_market_valuation(
+                cursor,
+                asset_id=asset["id"],
+                valuation_method="snapshot_imported",
+                current_price=Decimal("1"),
+                price_source="manual_non_market",
+                price_updated_at=movement_date_iso,
+            )
+            conn.commit()
+            return tx_id
         except Exception:
             conn.rollback()
             raise

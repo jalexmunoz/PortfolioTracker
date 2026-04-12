@@ -839,6 +839,129 @@ def cli_add_transaction(tx_date, account, symbol, side, qty, price, fee, notes):
     _record_transaction_from_cli(side, symbol, account, qty, price, fee, tx_date, notes)
 
 
+@main.command("add-cdt")
+@click.option("--account", required=True)
+@click.option("--symbol", default="BBVA CDT", show_default=True)
+@click.option("--open-date", "open_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--maturity-date", "maturity_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--principal", required=True, callback=parse_decimal)
+@click.option("--term", "term_years", required=True, callback=parse_decimal, help="Contract term in years (decimal). Example: 0.5 = 6 months.")
+@click.option("--rate", "annual_rate", required=True, callback=parse_decimal, help="Simple annual rate as decimal. Example: 0.10 = 10%.")
+@click.option("--notes", default=None)
+def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years, annual_rate, notes):
+    """Record one manual non-market CDT contract (term is in years)."""
+    account_normalized = (account or "").strip()
+    if not account_normalized:
+        raise click.BadParameter("account cannot be empty", param_hint="account")
+
+    symbol_normalized = (symbol or "").strip().upper()
+    if not symbol_normalized:
+        raise click.BadParameter("symbol cannot be empty", param_hint="symbol")
+
+    if principal <= 0:
+        raise click.BadParameter("principal must be > 0", param_hint="principal")
+    if annual_rate < 0:
+        raise click.BadParameter("rate must be >= 0", param_hint="rate")
+    if term_years <= 0:
+        raise click.BadParameter("term must be > 0 (years)", param_hint="term")
+
+    open_date_iso = open_date.date().isoformat()
+    maturity_date_iso = maturity_date.date().isoformat()
+    if maturity_date_iso <= open_date_iso:
+        raise click.BadParameter("maturity-date must be after open-date", param_hint="maturity_date")
+
+    expected_term_years = Decimal(str((maturity_date.date() - open_date.date()).days)) / Decimal("365")
+    if abs(expected_term_years - term_years) > Decimal("0.20"):
+        raise click.BadParameter(
+            f"term is inconsistent with open-date/maturity-date (expected approx {expected_term_years.quantize(Decimal('0.01'))} years)",
+            param_hint="term",
+        )
+
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+
+    try:
+        tx_id = svc.record_cdt(
+            account=account_normalized,
+            symbol=symbol_normalized,
+            open_date=open_date_iso,
+            maturity_date=maturity_date_iso,
+            principal=principal,
+            term_years=term_years,
+            annual_rate=annual_rate,
+            notes=notes,
+        )
+        click.echo(
+            "OK: "
+            f"CDT recorded id={tx_id} "
+            f"account={account_normalized} "
+            f"symbol={symbol_normalized} "
+            f"open_date={open_date_iso} "
+            f"maturity_date={maturity_date_iso} "
+            f"principal={format_money(principal)} "
+            f"term_years={term_years} "
+            f"rate={annual_rate}"
+        )
+    except InvalidTransaction as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    finally:
+        db.close()
+
+
+@main.command("add-fund-movement")
+@click.option("--account", required=True)
+@click.option("--symbol", required=True)
+@click.option("--date", "movement_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--movement-type", required=True, type=click.Choice(["CONTRIBUTION", "WITHDRAWAL"], case_sensitive=False))
+@click.option("--amount", required=True, callback=parse_decimal)
+@click.option("--notes", default=None)
+def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount, notes):
+    """Record one manual non-market fund contribution or withdrawal."""
+    account_normalized = (account or "").strip()
+    if not account_normalized:
+        raise click.BadParameter("account cannot be empty", param_hint="account")
+
+    symbol_normalized = (symbol or "").strip().upper()
+    if not symbol_normalized:
+        raise click.BadParameter("symbol cannot be empty", param_hint="symbol")
+
+    if amount <= 0:
+        raise click.BadParameter("amount must be > 0", param_hint="amount")
+
+    movement_date_iso = movement_date.date().isoformat()
+    movement_type_normalized = movement_type.strip().upper()
+
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+
+    try:
+        tx_id = svc.record_fund_movement(
+            account=account_normalized,
+            symbol=symbol_normalized,
+            movement_date=movement_date_iso,
+            amount=amount,
+            movement_type=movement_type_normalized,
+            notes=notes,
+        )
+        click.echo(
+            "OK: "
+            f"FUND movement recorded id={tx_id} "
+            f"account={account_normalized} "
+            f"symbol={symbol_normalized} "
+            f"date={movement_date_iso} "
+            f"type={movement_type_normalized} "
+            f"amount={format_money(amount)}"
+        )
+    except InvalidTransaction as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    finally:
+        db.close()
+
+
 @main.command("buy")
 @click.option("--symbol", required=True)
 @click.option("--account", required=True)

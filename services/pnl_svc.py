@@ -1,8 +1,9 @@
 """
 PnL (Profit and Loss) service.
 """
+import json
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from portfolio_tracker_v2.core import Database
@@ -16,6 +17,7 @@ class PnLService:
     BBVA_CDT_OPEN_DATE = date(2026, 1, 1)
     BBVA_CDT_MATURITY_DATE = date(2026, 6, 1)
     BBVA_CDT_ANNUAL_RATE = Decimal('0.092')
+    CDT_CONTRACT_NOTE_PREFIX = "CDT_CONTRACT_V1:"
 
     def __init__(self, db: Database, resolver: AssetResolver):
         self.db = db
@@ -104,15 +106,99 @@ class PnLService:
             return None
         return Decimal(str(row[0]))
 
+    def _get_latest_open_buy_lot(self, asset_id: int, account: Optional[str]):
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
+        base_query = """
+            SELECT
+                t.id,
+                t.unit_price,
+                t.notes,
+                (t.quantity - COALESCE(SUM(lm.quantity), 0)) AS remaining_qty
+            FROM transactions t
+            LEFT JOIN lot_matches lm ON lm.buy_tx_id = t.id
+            WHERE t.asset_id = ?
+              AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+        """
+        params = [asset_id]
+        if account:
+            base_query += " AND t.account_id = (SELECT id FROM accounts WHERE name = ?)"
+            params.append(account)
+
+        base_query += """
+            GROUP BY t.id, t.unit_price, t.notes, t.quantity
+            HAVING remaining_qty > 0
+            ORDER BY t.tx_date DESC, t.id DESC
+            LIMIT 1
+        """
+
+        cursor.execute(base_query, params)
+        return cursor.fetchone()
+
+    def _extract_cdt_contract_from_notes(self, notes: str | None) -> dict | None:
+        if not notes:
+            return None
+        text = str(notes).strip()
+        if not text.startswith(self.CDT_CONTRACT_NOTE_PREFIX):
+            return None
+
+        payload_text = text[len(self.CDT_CONTRACT_NOTE_PREFIX):]
+        if " | " in payload_text:
+            payload_text = payload_text.split(" | ", 1)[0].strip()
+        if not payload_text:
+            return None
+
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return None
+
+        required_fields = {"principal", "term_years", "annual_rate"}
+        if not required_fields.issubset(payload.keys()):
+            return None
+
+        try:
+            principal = Decimal(str(payload["principal"]))
+            term_years = Decimal(str(payload["term_years"]))
+            annual_rate = Decimal(str(payload["annual_rate"]))
+        except (InvalidOperation, TypeError):
+            return None
+
+        if principal <= 0 or term_years <= 0 or annual_rate < 0:
+            return None
+
+        return {
+            "principal": principal,
+            "term_years": term_years,
+            "annual_rate": annual_rate,
+        }
+
     def _get_non_market_approved_price(self, asset_id: int, account: Optional[str], symbol: str, valuation_method: str) -> Decimal | None:
         """Approved valuation for non-market assets from snapshot/manual/contractual rules."""
-        if valuation_method == 'contractual_value' and symbol == 'BBVA CDT':
-            principal = self._get_latest_buy_unit_price(asset_id, account)
-            if principal is None:
-                return None
-            report_date = min(date.today(), self.BBVA_CDT_MATURITY_DATE)
-            elapsed_days = max((report_date - self.BBVA_CDT_OPEN_DATE).days, 0)
-            return principal * (Decimal('1') + self.BBVA_CDT_ANNUAL_RATE * Decimal(elapsed_days) / Decimal('365'))
+        latest_open_buy = self._get_latest_open_buy_lot(asset_id, account)
+        latest_open_price = None
+        latest_open_notes = None
+        if latest_open_buy:
+            latest_open_price = Decimal(str(latest_open_buy[1])) if latest_open_buy[1] is not None else None
+            latest_open_notes = latest_open_buy[2]
+
+        if valuation_method == 'contractual_value':
+            contract = self._extract_cdt_contract_from_notes(latest_open_notes)
+            if contract is not None:
+                principal = contract['principal']
+                gain = principal * contract['term_years'] * contract['annual_rate']
+                return principal + gain
+
+            if symbol == 'BBVA CDT':
+                principal = latest_open_price if latest_open_price is not None else self._get_latest_buy_unit_price(asset_id, account)
+                if principal is None:
+                    return None
+                report_date = min(date.today(), self.BBVA_CDT_MATURITY_DATE)
+                elapsed_days = max((report_date - self.BBVA_CDT_OPEN_DATE).days, 0)
+                return principal * (Decimal('1') + self.BBVA_CDT_ANNUAL_RATE * Decimal(elapsed_days) / Decimal('365'))
+
+            return latest_open_price if latest_open_price is not None else self._get_latest_buy_unit_price(asset_id, account)
 
         return self._get_latest_buy_unit_price(asset_id, account)
 

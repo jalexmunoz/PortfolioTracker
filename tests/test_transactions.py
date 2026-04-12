@@ -611,3 +611,99 @@ def test_inspect_lot_matches_by_buy_tx_id(transaction_svc):
     assert len(rows) == 1
     assert rows[0]['buy_tx_id'] == buy_id
     assert rows[0]['sell_tx_id'] == sell_id
+
+
+def test_record_cdt_manual_persists_contractual_metadata_and_asset_method(transaction_svc, db_connection):
+    tx_id = transaction_svc.record_cdt(
+        account='BBVA',
+        symbol='BBVA CDT',
+        open_date='2026-04-11',
+        maturity_date='2026-10-11',
+        principal=Decimal('5000'),
+        term_years=Decimal('0.5'),
+        annual_rate=Decimal('0.10'),
+    )
+
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    cursor.execute('SELECT tx_type, quantity, unit_price, notes FROM transactions WHERE id = ?', (tx_id,))
+    tx_row = cursor.fetchone()
+
+    assert tx_row[0] == 'BUY'
+    assert Decimal(str(tx_row[1])) == Decimal('1')
+    assert Decimal(str(tx_row[2])) == Decimal('5000')
+    assert str(tx_row[3]).startswith('CDT_CONTRACT_V1:')
+
+    cursor.execute(
+        """
+        SELECT a.valuation_method
+        FROM assets a
+        JOIN transactions t ON t.asset_id = a.id
+        WHERE t.id = ?
+        """,
+        (tx_id,),
+    )
+    assert cursor.fetchone()[0] == 'contractual_value'
+
+
+def test_record_cdt_rejects_second_open_contract_for_same_account_symbol(transaction_svc):
+    transaction_svc.record_cdt(
+        account='BBVA',
+        symbol='BBVA CDT',
+        open_date='2026-04-11',
+        maturity_date='2026-10-11',
+        principal=Decimal('5000'),
+        term_years=Decimal('0.5'),
+        annual_rate=Decimal('0.10'),
+    )
+
+    with pytest.raises(InvalidTransaction) as exc:
+        transaction_svc.record_cdt(
+            account='BBVA',
+            symbol='BBVA CDT',
+            open_date='2026-04-12',
+            maturity_date='2026-10-12',
+            principal=Decimal('1000'),
+            term_years=Decimal('0.5'),
+            annual_rate=Decimal('0.08'),
+        )
+
+    assert 'already has an open position' in str(exc.value)
+
+
+def test_record_fund_movement_supports_contribution_withdrawal_and_blocks_negative(transaction_svc, db_connection):
+    transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-11',
+        amount=Decimal('300'),
+        movement_type='CONTRIBUTION',
+    )
+    transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-20',
+        amount=Decimal('50'),
+        movement_type='WITHDRAWAL',
+    )
+
+    lots = transaction_svc.list_open_lots(account='Trii', symbol='FONDO DINAMICO')
+    assert len(lots) == 1
+    assert Decimal(str(lots[0]['remaining_qty'])) == Decimal('250')
+
+    with pytest.raises(InvalidTransaction) as exc:
+        transaction_svc.record_fund_movement(
+            account='Trii',
+            symbol='FONDO DINAMICO',
+            movement_date='2026-04-21',
+            amount=Decimal('999'),
+            movement_type='WITHDRAWAL',
+        )
+    assert 'Insufficient holdings' in str(exc.value)
+
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT valuation_method, current_price FROM assets WHERE symbol = 'FONDO DINAMICO'")
+    asset_row = cursor.fetchone()
+    assert asset_row[0] == 'snapshot_imported'
+    assert Decimal(str(asset_row[1])) == Decimal('1')
