@@ -493,7 +493,7 @@ def test_summary_with_valuation(services):
     s = pnl_svc.summary(account='Main')
     assert s['total_cost_basis'] == Decimal('300')
     assert s['total_realized_pnl'] == Decimal('0')
-    assert s['cash_balance'] == Decimal('0')
+    assert s['cash_balance'] == Decimal('-300')
     assert s['total_equity'] == Decimal('200')
     assert s['market_covered_value'] == Decimal('200')
     assert s['non_market_valued'] == Decimal('0')

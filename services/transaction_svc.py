@@ -133,6 +133,30 @@ class TransactionService:
         outflows = Decimal(str(row[1] or 0))
         return inflows - outflows
 
+
+    def _record_cash_movement(
+        self,
+        cursor,
+        tx_id: int,
+        account_id: int,
+        movement_type: str,
+        amount_usd: Decimal,
+        note: Optional[str] = None,
+    ) -> None:
+        cursor.execute(
+            """
+            INSERT INTO cash_ledger (tx_id, account_id, movement_type, amount_usd, note)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(tx_id),
+                int(account_id),
+                movement_type,
+                float(amount_usd),
+                note,
+            ),
+        )
+
     def record_buy(
         self,
         symbol: str,
@@ -196,6 +220,14 @@ class TransactionService:
                 )
             )
             tx_id = cursor.lastrowid
+            self._record_cash_movement(
+                cursor,
+                tx_id=tx_id,
+                account_id=account_id,
+                movement_type='BUY',
+                amount_usd=-total_usd,
+                note='Auto cash delta from BUY',
+            )
             conn.commit()
             return tx_id
         except Exception:
@@ -335,6 +367,14 @@ class TransactionService:
                     f"Insufficient holdings: tried to sell {qty} but only {qty - qty_remaining} available"
                 )
 
+            self._record_cash_movement(
+                cursor,
+                tx_id=sell_tx_id,
+                account_id=account_id,
+                movement_type='SELL',
+                amount_usd=total_usd,
+                note='Auto cash delta from SELL',
+            )
             conn.commit()
             return sell_tx_id
         except Exception:
@@ -423,6 +463,14 @@ class TransactionService:
                 ),
             )
             tx_id = cursor.lastrowid
+            self._record_cash_movement(
+                cursor,
+                tx_id=tx_id,
+                account_id=account_id,
+                movement_type='CDT_BUY',
+                amount_usd=-principal,
+                note='Auto cash delta from manual CDT',
+            )
             self._set_asset_non_market_valuation(
                 cursor,
                 asset_id=asset["id"],
@@ -500,6 +548,16 @@ class TransactionService:
                 ),
             )
             tx_id = cursor.lastrowid
+
+            cash_delta = -amount_dec if movement_type_normalized == 'CONTRIBUTION' else amount_dec
+            self._record_cash_movement(
+                cursor,
+                tx_id=tx_id,
+                account_id=account_id,
+                movement_type=f'FUND_{movement_type_normalized}',
+                amount_usd=cash_delta,
+                note='Auto cash delta from fund movement',
+            )
 
             self._set_asset_non_market_valuation(
                 cursor,
@@ -783,6 +841,7 @@ class TransactionService:
             tx_type = row[1]
 
             if tx_type in ("BUY", "MIGRATION_BUY"):
+                cursor.execute("DELETE FROM cash_ledger WHERE tx_id = ?", (tx_id,))
                 cursor.execute("SELECT COUNT(1) FROM lot_matches WHERE buy_tx_id = ?", (tx_id,))
                 match_count = int(cursor.fetchone()[0] or 0)
                 if match_count > 0:
@@ -799,6 +858,7 @@ class TransactionService:
                 return {"id": tx_id, "tx_type": tx_type}
 
             if tx_type == "SELL":
+                cursor.execute("DELETE FROM cash_ledger WHERE tx_id = ?", (tx_id,))
                 cursor.execute("DELETE FROM lot_matches WHERE sell_tx_id = ?", (tx_id,))
                 cursor.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
                 conn.commit()

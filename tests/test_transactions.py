@@ -783,3 +783,111 @@ def test_delete_transaction_fund_movement_keeps_balance_consistent(transaction_s
     after = next(p for p in pnl_svc.positions('Trii') if p['symbol'] == 'FONDO DINAMICO')
     assert after['qty_open'] == Decimal('563.25')
     assert after['cost_basis'] == Decimal('563.25')
+
+
+
+def test_cash_ledger_tracks_buy_sell_and_account_scopes(transaction_svc, db_connection):
+    transaction_svc.record_buy(
+        symbol='BTC',
+        account='Trezor',
+        qty=Decimal('1'),
+        unit_price=Decimal('1000'),
+        fee_usd=Decimal('5'),
+        tx_date='2026-04-12',
+    )
+    transaction_svc.record_sell(
+        symbol='BTC',
+        account='Trezor',
+        qty=Decimal('0.5'),
+        unit_price=Decimal('1200'),
+        fee_usd=Decimal('2'),
+        tx_date='2026-04-13',
+    )
+    transaction_svc.record_buy(
+        symbol='ETH',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-04-12',
+    )
+
+    resolver = AssetResolver(db_connection)
+    pnl_svc = PnLService(db_connection, resolver)
+    assert pnl_svc.cash_balance('Trezor') == Decimal('-407')
+    assert pnl_svc.cash_balance('Main') == Decimal('-100')
+    assert pnl_svc.cash_balance() == Decimal('-507')
+
+
+def test_delete_transaction_reverts_cash_for_buy_and_sell(transaction_svc, db_connection):
+    buy_id = transaction_svc.record_buy(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('100'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-04-12',
+    )
+    sell_id = transaction_svc.record_sell(
+        symbol='BTC',
+        account='Main',
+        qty=Decimal('1'),
+        unit_price=Decimal('150'),
+        fee_usd=Decimal('0'),
+        tx_date='2026-04-13',
+    )
+
+    resolver = AssetResolver(db_connection)
+    pnl_svc = PnLService(db_connection, resolver)
+    assert pnl_svc.cash_balance('Main') == Decimal('50')
+
+    transaction_svc.delete_transaction(sell_id)
+    assert pnl_svc.cash_balance('Main') == Decimal('-100')
+
+    transaction_svc.delete_transaction(buy_id)
+    assert pnl_svc.cash_balance('Main') == Decimal('0')
+
+
+def test_cash_behavior_for_cdt_and_fund_movements(transaction_svc, db_connection):
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db_connection)
+    fund_asset = resolver.resolve('FONDO DINAMICO')
+    account_id = transaction_svc._get_or_create_account('Trii', cursor)
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund_asset['id'], account_id, 'MIGRATION_BUY', 1.0, 263.25, 0.0, 263.25, '2026-04-01', 'legacy seed'),
+    )
+    conn.commit()
+
+    transaction_svc.record_cdt(
+        account='BBVA',
+        symbol='COLTEF CDT',
+        open_date='2026-01-26',
+        maturity_date='2026-06-23',
+        principal=Decimal('4661.13'),
+        term_years=None,
+        annual_rate=Decimal('0.102'),
+    )
+    transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-11',
+        amount=Decimal('300'),
+        movement_type='CONTRIBUTION',
+    )
+    transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-20',
+        amount=Decimal('50'),
+        movement_type='WITHDRAWAL',
+    )
+
+    pnl_svc = PnLService(db_connection, resolver)
+    assert pnl_svc.cash_balance('BBVA') == Decimal('-4661.13')
+    assert pnl_svc.cash_balance('Trii') == Decimal('-250')

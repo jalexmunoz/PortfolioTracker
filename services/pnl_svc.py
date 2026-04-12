@@ -478,19 +478,48 @@ class PnLService:
     def cash_balance(self, account: Optional[str] = None) -> Decimal:
         conn = self.db.connect()
         cursor = conn.cursor()
-        usd = self.resolver.get_or_create_usd_cash()
+
         if account:
             cursor.execute(
-                "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ? AND account_id = (SELECT id FROM accounts WHERE name = ?)",
-                (usd['id'], account),
+                """
+                SELECT COALESCE(SUM(cl.amount_usd), 0)
+                FROM cash_ledger cl
+                JOIN accounts acc ON acc.id = cl.account_id
+                WHERE acc.name = ?
+                """,
+                (account,),
             )
+            cash_ledger_sum = Decimal(str(cursor.fetchone()[0] or 0))
+
+            cursor.execute("SELECT id FROM assets WHERE symbol = '__USD_CASH__'")
+            usd_row = cursor.fetchone()
+            if usd_row is not None:
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(total_usd), 0)
+                    FROM transactions
+                    WHERE asset_id = ?
+                      AND account_id = (SELECT id FROM accounts WHERE name = ?)
+                    """,
+                    (usd_row[0], account),
+                )
+                legacy_usd_sum = Decimal(str(cursor.fetchone()[0] or 0))
+            else:
+                legacy_usd_sum = Decimal('0')
         else:
-            cursor.execute(
-                "SELECT COALESCE(SUM(total_usd),0) FROM transactions WHERE asset_id = ?",
-                (usd['id'],),
-            )
-        res = cursor.fetchone()[0]
-        return Decimal(str(res)) if res is not None else Decimal('0')
+            cursor.execute("SELECT COALESCE(SUM(amount_usd), 0) FROM cash_ledger")
+            cash_ledger_sum = Decimal(str(cursor.fetchone()[0] or 0))
+
+            cursor.execute("SELECT id FROM assets WHERE symbol = '__USD_CASH__'")
+            usd_row = cursor.fetchone()
+            if usd_row is not None:
+                cursor.execute("SELECT COALESCE(SUM(total_usd), 0) FROM transactions WHERE asset_id = ?", (usd_row[0],))
+                legacy_usd_sum = Decimal(str(cursor.fetchone()[0] or 0))
+            else:
+                legacy_usd_sum = Decimal('0')
+
+        return cash_ledger_sum + legacy_usd_sum
+
 
     def summary(self, account: Optional[str] = None) -> dict:
         positions = self.positions(account)

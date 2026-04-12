@@ -693,7 +693,7 @@ def test_summary_export_json_writes_snapshot_file(tmp_path, monkeypatch):
     assert "generated_at" in payload
     assert payload["total_cost_basis"] == 100.0
     assert payload["total_realized_pnl"] == 0.0
-    assert payload["cash_balance"] == 0.0
+    assert payload["cash_balance"] == -100.0
     assert payload["total_equity"] == 200.0
     assert payload["market_covered_value"] == 200.0
     assert payload["non_market_valued"] == 0.0
@@ -1111,7 +1111,7 @@ def test_daily_report_without_previous_snapshot(tmp_path, monkeypatch):
     assert "Summary" in result.output
     assert "Timestamp:" in result.output
     assert "Total Equity: 200.00" in result.output
-    assert "Cash balance: 0.00" in result.output
+    assert "Cash balance: -100.00" in result.output
     assert "Total market value: 200.00" in result.output
     assert "Realized PnL: 0.00" in result.output
     assert "Unrealized PnL: 100.00" in result.output
@@ -3298,3 +3298,162 @@ def test_delete_transaction_manual_cdt_and_fund_movement_integrity(tmp_path, mon
     positions = runner.invoke(main, ["positions", "--account", "Trii"], env=env)
     assert positions.exit_code == 0
     assert "563.25" in positions.output
+
+
+
+def test_cash_summary_reflects_buy_sell_net_and_account_filter(tmp_path, monkeypatch):
+    db_file = tmp_path / "cash_summary_net.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    run_cmd(
+        runner,
+        [
+            "add-transaction",
+            "--date", "2026-04-12",
+            "--account", "Trezor",
+            "--symbol", "BTC",
+            "--side", "buy",
+            "--qty", "1",
+            "--price", "1000",
+            "--fee", "5",
+        ],
+        env,
+    )
+    run_cmd(
+        runner,
+        [
+            "add-transaction",
+            "--date", "2026-04-13",
+            "--account", "Trezor",
+            "--symbol", "BTC",
+            "--side", "sell",
+            "--qty", "0.5",
+            "--price", "1200",
+            "--fee", "2",
+        ],
+        env,
+    )
+
+    total_summary = runner.invoke(main, ["summary"], env=env)
+    assert total_summary.exit_code == 0
+    assert "Cash balance: -407.00" in total_summary.output
+
+    account_summary = runner.invoke(main, ["summary", "--account", "Trezor"], env=env)
+    assert account_summary.exit_code == 0
+    assert "Cash balance: -407.00" in account_summary.output
+
+
+def test_cash_summary_delete_transaction_reverts_cash(tmp_path, monkeypatch):
+    db_file = tmp_path / "cash_delete_revert.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    run_cmd(
+        runner,
+        [
+            "add-transaction",
+            "--date", "2026-04-12",
+            "--account", "Main",
+            "--symbol", "BTC",
+            "--side", "buy",
+            "--qty", "1",
+            "--price", "100",
+        ],
+        env,
+    )
+
+    listed = runner.invoke(main, ["list-transactions", "--account", "Main", "--symbol", "BTC"], env=env)
+    assert listed.exit_code == 0
+    tx_id = int([line.split()[0] for line in listed.output.splitlines() if line.strip() and line.strip()[0].isdigit()][0])
+
+    before = runner.invoke(main, ["summary", "--account", "Main", "--output-json", "-"], env=env)
+    assert before.exit_code == 0
+    before_payload = json.loads(before.output)
+    assert before_payload["cash_balance"] == -100.0
+
+    deleted = runner.invoke(main, ["delete-transaction", str(tx_id)], env=env)
+    assert deleted.exit_code == 0
+
+    after = runner.invoke(main, ["summary", "--account", "Main", "--output-json", "-"], env=env)
+    assert after.exit_code == 0
+    after_payload = json.loads(after.output)
+    assert after_payload["cash_balance"] == 0.0
+
+
+def test_cash_behavior_cdt_and_fund_movements(tmp_path, monkeypatch):
+    db_file = tmp_path / "cash_special_assets.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    fund = resolver.resolve("FONDO DINAMICO")
+    cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trii",))
+    trii_id = cursor.lastrowid
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund["id"], trii_id, "MIGRATION_BUY", 1.0, 263.25, 0.0, 263.25, "2026-04-01", "legacy seed"),
+    )
+    conn.commit()
+    db.close()
+
+    run_cmd(
+        runner,
+        [
+            "add-cdt",
+            "--account", "BBVA",
+            "--symbol", "COLTEF CDT",
+            "--open-date", "2026-01-26",
+            "--maturity-date", "2026-06-23",
+            "--principal", "4661.13",
+            "--rate", "0.102",
+        ],
+        env,
+    )
+    run_cmd(
+        runner,
+        [
+            "add-fund-movement",
+            "--account", "Trii",
+            "--symbol", "FONDO DINAMICO",
+            "--date", "2026-04-11",
+            "--movement-type", "CONTRIBUTION",
+            "--amount", "300",
+        ],
+        env,
+    )
+    run_cmd(
+        runner,
+        [
+            "add-fund-movement",
+            "--account", "Trii",
+            "--symbol", "FONDO DINAMICO",
+            "--date", "2026-04-20",
+            "--movement-type", "WITHDRAWAL",
+            "--amount", "50",
+        ],
+        env,
+    )
+
+    bbva_summary = runner.invoke(main, ["summary", "--account", "BBVA", "--output-json", "-"], env=env)
+    assert bbva_summary.exit_code == 0
+    bbva_payload = json.loads(bbva_summary.output)
+    assert bbva_payload["cash_balance"] == -4661.13
+
+    trii_summary = runner.invoke(main, ["summary", "--account", "Trii", "--output-json", "-"], env=env)
+    assert trii_summary.exit_code == 0
+    trii_payload = json.loads(trii_summary.output)
+    assert trii_payload["cash_balance"] == -250.0

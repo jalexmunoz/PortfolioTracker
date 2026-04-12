@@ -24,7 +24,7 @@ class Database:
         if self.conn:
             return self.conn
         try:
-            self.conn = sqlite3.connect(self.db_path)
+            self.conn = sqlite3.connect(self.db_path, timeout=30)
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.row_factory = sqlite3.Row
             return self.conn
@@ -142,6 +142,21 @@ class Database:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (asset_id) REFERENCES assets(id)
         );
+
+
+        CREATE TABLE IF NOT EXISTS cash_ledger (
+            id INTEGER PRIMARY KEY,
+            tx_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            movement_type TEXT NOT NULL,
+            amount_usd REAL NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (tx_id) REFERENCES transactions(id),
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cash_ledger_account ON cash_ledger(account_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_cash_ledger_tx ON cash_ledger(tx_id);
         """
 
         try:
