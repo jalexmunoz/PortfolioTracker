@@ -52,6 +52,18 @@ def parse_decimal(ctx, param, value):
         raise click.BadParameter(f"{param} must be a number, got '{value}'")
 
 
+def parse_optional_decimal(ctx, param, value):
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return Decimal(raw)
+    except (InvalidOperation, TypeError):
+        raise click.BadParameter(f"{param} must be a number, got '{value}'")
+
+
 def format_money(value):
     """Format decimal as currency: 1234.56 -> 1,234.56"""
     return f"{value:,.2f}"
@@ -845,7 +857,7 @@ def cli_add_transaction(tx_date, account, symbol, side, qty, price, fee, notes):
 @click.option("--open-date", "open_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--maturity-date", "maturity_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
 @click.option("--principal", required=True, callback=parse_decimal)
-@click.option("--term", "term_years", required=True, callback=parse_decimal, help="Contract term in years (decimal). Example: 0.5 = 6 months.")
+@click.option("--term", "term_years", default=None, callback=parse_optional_decimal, help="Optional term in years (decimal). If provided, dates remain the source of truth.")
 @click.option("--rate", "annual_rate", required=True, callback=parse_decimal, help="Simple annual rate as decimal. Example: 0.10 = 10%.")
 @click.option("--notes", default=None)
 def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years, annual_rate, notes):
@@ -862,20 +874,13 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
         raise click.BadParameter("principal must be > 0", param_hint="principal")
     if annual_rate < 0:
         raise click.BadParameter("rate must be >= 0", param_hint="rate")
-    if term_years <= 0:
-        raise click.BadParameter("term must be > 0 (years)", param_hint="term")
+    if term_years is not None and term_years <= 0:
+        raise click.BadParameter("term must be > 0 (years) when provided", param_hint="term")
 
     open_date_iso = open_date.date().isoformat()
     maturity_date_iso = maturity_date.date().isoformat()
     if maturity_date_iso <= open_date_iso:
         raise click.BadParameter("maturity-date must be after open-date", param_hint="maturity_date")
-
-    expected_term_years = Decimal(str((maturity_date.date() - open_date.date()).days)) / Decimal("365")
-    if abs(expected_term_years - term_years) > Decimal("0.20"):
-        raise click.BadParameter(
-            f"term is inconsistent with open-date/maturity-date (expected approx {expected_term_years.quantize(Decimal('0.01'))} years)",
-            param_hint="term",
-        )
 
     db = ensure_db()
     resolver = AssetResolver(db)
@@ -892,6 +897,10 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
             annual_rate=annual_rate,
             notes=notes,
         )
+        derived_term_years = (Decimal(str((maturity_date.date() - open_date.date()).days)) / Decimal("365")).quantize(Decimal("0.0001"))
+        term_fragment = f"term_years_derived={derived_term_years}"
+        if term_years is not None:
+            term_fragment += f" term_years_input={term_years}"
         click.echo(
             "OK: "
             f"CDT recorded id={tx_id} "
@@ -900,7 +909,7 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
             f"open_date={open_date_iso} "
             f"maturity_date={maturity_date_iso} "
             f"principal={format_money(principal)} "
-            f"term_years={term_years} "
+            f"{term_fragment} "
             f"rate={annual_rate}"
         )
     except InvalidTransaction as exc:

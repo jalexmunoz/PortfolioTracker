@@ -114,6 +114,25 @@ class TransactionService:
             ),
         )
 
+
+    def _fund_balance_for_asset_account(self, cursor, asset_id: int, account_id: int) -> Decimal:
+        cursor.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN tx_type IN ('BUY', 'MIGRATION_BUY') THEN total_usd ELSE 0 END), 0) AS inflows,
+                COALESCE(SUM(CASE WHEN tx_type = 'SELL' THEN total_usd ELSE 0 END), 0) AS outflows
+            FROM transactions
+            WHERE asset_id = ? AND account_id = ?
+            """,
+            (asset_id, account_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return Decimal('0')
+        inflows = Decimal(str(row[0] or 0))
+        outflows = Decimal(str(row[1] or 0))
+        return inflows - outflows
+
     def record_buy(
         self,
         symbol: str,
@@ -329,7 +348,7 @@ class TransactionService:
         open_date: str,
         maturity_date: str,
         principal: Decimal,
-        term_years: Decimal,
+        term_years: Optional[Decimal],
         annual_rate: Decimal,
         notes: Optional[str] = None,
     ) -> int:
@@ -346,8 +365,8 @@ class TransactionService:
             raise InvalidTransaction("principal must be positive")
         if annual_rate < 0:
             raise InvalidTransaction("rate cannot be negative")
-        if term_years <= 0:
-            raise InvalidTransaction("term must be positive (years)")
+        if term_years is not None and term_years <= 0:
+            raise InvalidTransaction("term must be positive when provided")
 
         open_date_iso = self._parse_iso_date(open_date, "open_date")
         maturity_date_iso = self._parse_iso_date(maturity_date, "maturity_date")
@@ -356,20 +375,19 @@ class TransactionService:
         if maturity_date_obj <= open_date_obj:
             raise InvalidTransaction("maturity_date must be after open_date")
 
-        expected_term_years = Decimal(str((maturity_date_obj - open_date_obj).days)) / Decimal("365")
-        if abs(expected_term_years - term_years) > Decimal("0.20"):
-            raise InvalidTransaction(
-                "term is inconsistent with open_date/maturity_date (expected approximately "
-                f"{expected_term_years.quantize(Decimal('0.01'))} years)"
-            )
+        derived_term_years = (Decimal(str((maturity_date_obj - open_date_obj).days)) / Decimal("365")).quantize(Decimal("0.00000001"))
 
         contract_payload = {
             "open_date": open_date_iso,
             "maturity_date": maturity_date_iso,
             "principal": str(principal),
-            "term_years": str(term_years),
+            "term_years": str(derived_term_years),
             "annual_rate": str(annual_rate),
+            "term_source": "derived_from_dates",
         }
+        if term_years is not None:
+            contract_payload["term_years_input"] = str(term_years)
+
         payload_notes = f"{self.CDT_CONTRACT_NOTE_PREFIX}{json.dumps(contract_payload, separators=(',', ':'))}"
         extra_notes = (notes or "").strip()
         stored_notes = payload_notes if not extra_notes else f"{payload_notes} | {extra_notes}"
@@ -425,7 +443,7 @@ class TransactionService:
         movement_type: str,
         notes: Optional[str] = None,
     ) -> int:
-        """Record one non-market fund movement using BUY/SELL semantics with unit_price=1."""
+        """Record one non-market fund movement as monetary balance (no FIFO lot matching)."""
         account_name = (account or "").strip()
         if not account_name:
             raise InvalidTransaction("account cannot be empty")
@@ -450,31 +468,39 @@ class TransactionService:
         user_note = (notes or "").strip()
         stored_notes = movement_note if not user_note else f"{movement_note} | {user_note}"
 
-        if movement_type_normalized == "CONTRIBUTION":
-            tx_id = self.record_buy(
-                symbol=symbol_name,
-                account=account_name,
-                qty=amount_dec,
-                unit_price=Decimal("1"),
-                fee_usd=Decimal("0"),
-                tx_date=movement_date_iso,
-                notes=stored_notes,
-            )
-        else:
-            tx_id = self.record_sell(
-                symbol=symbol_name,
-                account=account_name,
-                qty=amount_dec,
-                unit_price=Decimal("1"),
-                fee_usd=Decimal("0"),
-                tx_date=movement_date_iso,
-                notes=stored_notes,
-            )
-
         conn = self.db.connect()
         cursor = conn.cursor()
         try:
             asset = self.resolver.resolve(symbol_name)
+            account_id = self._get_or_create_account(account_name, cursor)
+            current_balance = self._fund_balance_for_asset_account(cursor, asset["id"], account_id)
+
+            if movement_type_normalized == "WITHDRAWAL" and amount_dec > current_balance:
+                raise InvalidTransaction(
+                    f"Insufficient fund balance: tried to withdraw {amount_dec} but only {current_balance} available"
+                )
+
+            tx_type = "BUY" if movement_type_normalized == "CONTRIBUTION" else "SELL"
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset["id"],
+                    account_id,
+                    tx_type,
+                    1.0,
+                    float(amount_dec),
+                    0.0,
+                    float(amount_dec),
+                    movement_date_iso,
+                    stored_notes,
+                ),
+            )
+            tx_id = cursor.lastrowid
+
             self._set_asset_non_market_valuation(
                 cursor,
                 asset_id=asset["id"],

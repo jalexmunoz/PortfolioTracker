@@ -18,6 +18,7 @@ class PnLService:
     BBVA_CDT_MATURITY_DATE = date(2026, 6, 1)
     BBVA_CDT_ANNUAL_RATE = Decimal('0.092')
     CDT_CONTRACT_NOTE_PREFIX = "CDT_CONTRACT_V1:"
+    FUND_BALANCE_SYMBOLS = {"FONDO DINAMICO"}
 
     def __init__(self, db: Database, resolver: AssetResolver):
         self.db = db
@@ -52,6 +53,9 @@ class PnLService:
             return self._classify_price_quality(asset_id)
         if valuation_method == 'snapshot_imported':
             return 'usable_non_market' if current_price is not None else 'unavailable'
+        if valuation_method == 'snapshot_imported' and symbol in self.FUND_BALANCE_SYMBOLS:
+            return Decimal('1')
+
         if valuation_method == 'contractual_value':
             return 'usable_non_market' if current_price is not None else 'unavailable'
         return 'unvalued'
@@ -136,6 +140,42 @@ class PnLService:
         cursor.execute(base_query, params)
         return cursor.fetchone()
 
+    def _get_fund_balance_amount(self, asset_id: int, account: Optional[str]) -> Decimal:
+        conn = self.db.connect()
+        cursor = conn.cursor()
+
+        if account:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN tx_type IN ('BUY', 'MIGRATION_BUY') THEN total_usd ELSE 0 END), 0) AS inflows,
+                    COALESCE(SUM(CASE WHEN tx_type = 'SELL' THEN total_usd ELSE 0 END), 0) AS outflows
+                FROM transactions
+                WHERE asset_id = ?
+                  AND account_id = (SELECT id FROM accounts WHERE name = ?)
+                """,
+                (asset_id, account),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN tx_type IN ('BUY', 'MIGRATION_BUY') THEN total_usd ELSE 0 END), 0) AS inflows,
+                    COALESCE(SUM(CASE WHEN tx_type = 'SELL' THEN total_usd ELSE 0 END), 0) AS outflows
+                FROM transactions
+                WHERE asset_id = ?
+                """,
+                (asset_id,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return Decimal('0')
+
+        inflows = Decimal(str(row[0] or 0))
+        outflows = Decimal(str(row[1] or 0))
+        balance = inflows - outflows
+        return balance if balance > 0 else Decimal('0')
+
     def _extract_cdt_contract_from_notes(self, notes: str | None) -> dict | None:
         if not notes:
             return None
@@ -182,6 +222,9 @@ class PnLService:
         if latest_open_buy:
             latest_open_price = Decimal(str(latest_open_buy[1])) if latest_open_buy[1] is not None else None
             latest_open_notes = latest_open_buy[2]
+
+        if valuation_method == 'snapshot_imported' and symbol in self.FUND_BALANCE_SYMBOLS:
+            return Decimal('1')
 
         if valuation_method == 'contractual_value':
             contract = self._extract_cdt_contract_from_notes(latest_open_notes)
@@ -358,6 +401,34 @@ class PnLService:
             row = cursor.fetchone()
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
             valuation_method = row[1] if row and row[1] else asset.get('valuation_method', 'unvalued')
+
+            if sym in self.FUND_BALANCE_SYMBOLS and valuation_method in self.APPROVED_NON_MARKET_METHODS:
+                balance = self._get_fund_balance_amount(asset['id'], acct)
+                qty_open = balance
+                cost_basis = balance
+                avg_cost = Decimal('1') if balance > 0 else Decimal('0')
+                realized = Decimal('0')
+                approved_value = balance if balance > 0 else None
+
+                results.append(
+                    {
+                        'symbol': sym,
+                        'asset_type': asset.get('asset_type', ''),
+                        'account': acct,
+                        'qty_open': qty_open,
+                        'cost_basis': cost_basis,
+                        'avg_cost': avg_cost,
+                        'realized_pnl': realized,
+                        'current_price': Decimal('1'),
+                        'valuation_method': valuation_method,
+                        'valuation_status': 'usable_non_market',
+                        'approved_value': approved_value,
+                        'unrealized_pct': None,
+                        'alert': '',
+                    }
+                )
+                continue
+
             effective_price = current_price
             if valuation_method == 'contractual_value':
                 non_market_price = self._get_non_market_approved_price(asset['id'], acct, sym, valuation_method)

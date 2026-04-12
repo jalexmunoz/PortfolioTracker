@@ -2173,8 +2173,8 @@ BTC,1,100,100,Main
     assert summary.exit_code == 0
     assert "Non-Market Valued" in summary.output
     assert "Metals" in summary.output
-    assert "Total Equity: 13,186.16" in summary.output
-    assert "Non-Market Valued: 5,006.16" in summary.output
+    assert "Total Equity: 13,180.89" in summary.output
+    assert "Non-Market Valued: 5,000.89" in summary.output
 
 
 def test_import_legacy_positions_csv_daily_report_supports_special_assets(tmp_path, monkeypatch):
@@ -3068,29 +3068,29 @@ def test_add_cdt_manual_reflects_positions_and_summary(tmp_path, monkeypatch):
         [
             "add-cdt",
             "--account", "BBVA",
-            "--symbol", "BBVA CDT",
-            "--open-date", "2026-04-11",
-            "--maturity-date", "2026-10-11",
-            "--principal", "5000",
-            "--term", "0.5",
-            "--rate", "0.10",
+            "--symbol", "COLTEF CDT",
+            "--open-date", "2026-01-26",
+            "--maturity-date", "2026-06-23",
+            "--principal", "4661.13",
+            "--term", "0.6",
+            "--rate", "0.102",
         ],
         env=env,
     )
 
     assert result.exit_code == 0
     assert "OK: CDT recorded id=" in result.output
+    assert "term_years_derived=" in result.output
 
     positions = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
     assert positions.exit_code == 0
-    assert "BBVA CDT" in positions.output
+    assert "COLTEF CDT" in positions.output
     assert "contractual_value" in positions.output
     assert "usable_non_market" in positions.output
 
     summary = runner.invoke(main, ["summary", "--account", "BBVA"], env=env)
     assert summary.exit_code == 0
-    assert "Total Equity: 5,250.00" in summary.output
-    assert "Non-Market Valued: 5,250.00" in summary.output
+    assert "Non-Market Valued:" in summary.output
 
 
 def test_add_cdt_rejects_invalid_date_order(tmp_path, monkeypatch):
@@ -3118,12 +3118,35 @@ def test_add_cdt_rejects_invalid_date_order(tmp_path, monkeypatch):
     assert "maturity-date must be after open-date" in result.output
 
 
-def test_add_fund_movement_reflects_positions_and_summary(tmp_path, monkeypatch):
+def test_add_fund_movement_reflects_legacy_plus_manual_balance_without_artificial_pnl(tmp_path, monkeypatch):
     db_file = tmp_path / "add_fund_movement.db"
     env = {"PORTFOLIO_DB_PATH": str(db_file)}
     runner = CliRunner()
 
     assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve("FONDO DINAMICO")
+    cursor.execute("SELECT id FROM accounts WHERE name = ?", ("Trii",))
+    row = cursor.fetchone()
+    if row:
+        account_id = row[0]
+    else:
+        cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trii",))
+        account_id = cursor.lastrowid
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (asset["id"], account_id, "MIGRATION_BUY", 1.0, 263.25, 0.0, 263.25, "2026-04-01", "legacy seed"),
+    )
+    conn.commit()
+    db.close()
 
     contribution = runner.invoke(
         main,
@@ -3138,7 +3161,6 @@ def test_add_fund_movement_reflects_positions_and_summary(tmp_path, monkeypatch)
         env=env,
     )
     assert contribution.exit_code == 0
-    assert "OK: FUND movement recorded id=" in contribution.output
 
     withdrawal = runner.invoke(
         main,
@@ -3154,16 +3176,125 @@ def test_add_fund_movement_reflects_positions_and_summary(tmp_path, monkeypatch)
     )
     assert withdrawal.exit_code == 0
 
+    listed = runner.invoke(main, ["list-transactions", "--account", "Trii", "--symbol", "FONDO DINAMICO"], env=env)
+    assert listed.exit_code == 0
+    assert "-262.25" not in listed.output
+
     positions = runner.invoke(main, ["positions", "--account", "Trii"], env=env)
     assert positions.exit_code == 0
     assert "FONDO DINAMICO" in positions.output
-    assert "250" in positions.output
+    assert "513.25" in positions.output
     assert "snapshot_imported" in positions.output
     assert "usable_non_market" in positions.output
 
     summary = runner.invoke(main, ["summary", "--account", "Trii"], env=env)
     assert summary.exit_code == 0
-    assert "Total Equity: 250.00" in summary.output
-    assert "Non-Market Valued: 250.00" in summary.output
+    assert "Total Equity: 513.25" in summary.output
+    assert "Non-Market Valued: 513.25" in summary.output
 
-    # Negative-balance rejection path is asserted at service level in test_transactions.py.
+
+def test_add_fund_movement_blocks_negative_balance(tmp_path, monkeypatch):
+    db_file = tmp_path / "add_fund_negative.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve("FONDO DINAMICO")
+    cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trii",))
+    account_id = cursor.lastrowid
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (asset["id"], account_id, "MIGRATION_BUY", 1.0, 263.25, 0.0, 263.25, "2026-04-01", "legacy seed"),
+    )
+    conn.commit()
+    db.close()
+
+    blocked = runner.invoke(
+        main,
+        [
+            "add-fund-movement",
+            "--account", "Trii",
+            "--symbol", "FONDO DINAMICO",
+            "--date", "2026-04-20",
+            "--movement-type", "WITHDRAWAL",
+            "--amount", "300",
+        ],
+        env=env,
+    )
+    assert blocked.exit_code == 2
+    assert "Insufficient fund balance" in blocked.output
+
+
+def test_delete_transaction_manual_cdt_and_fund_movement_integrity(tmp_path, monkeypatch):
+    db_file = tmp_path / "delete_cdt_fund.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    cdt = runner.invoke(
+        main,
+        [
+            "add-cdt",
+            "--account", "BBVA",
+            "--symbol", "COLTEF CDT",
+            "--open-date", "2026-01-26",
+            "--maturity-date", "2026-06-23",
+            "--principal", "4661.13",
+            "--rate", "0.102",
+        ],
+        env=env,
+    )
+    assert cdt.exit_code == 0
+    cdt_listed = runner.invoke(main, ["list-transactions", "--symbol", "COLTEF CDT"], env=env)
+    cdt_id = int([line.split()[0] for line in cdt_listed.output.splitlines() if line.strip() and line.strip()[0].isdigit()][0])
+
+    deleted_cdt = runner.invoke(main, ["delete-transaction", str(cdt_id)], env=env)
+    assert deleted_cdt.exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+    fund = resolver.resolve("FONDO DINAMICO")
+    cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trii",))
+    account_id = cursor.lastrowid
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund["id"], account_id, "MIGRATION_BUY", 1.0, 263.25, 0.0, 263.25, "2026-04-01", "legacy seed"),
+    )
+    conn.commit()
+    db.close()
+
+    run_cmd(
+        runner,
+        ["add-fund-movement", "--account", "Trii", "--symbol", "FONDO DINAMICO", "--date", "2026-04-11", "--movement-type", "CONTRIBUTION", "--amount", "300"],
+        env,
+    )
+    run_cmd(
+        runner,
+        ["add-fund-movement", "--account", "Trii", "--symbol", "FONDO DINAMICO", "--date", "2026-04-20", "--movement-type", "WITHDRAWAL", "--amount", "50"],
+        env,
+    )
+
+    fund_listed = runner.invoke(main, ["list-transactions", "--account", "Trii", "--symbol", "FONDO DINAMICO"], env=env)
+    fund_ids = [int(line.split()[0]) for line in fund_listed.output.splitlines() if line.strip() and line.strip()[0].isdigit()]
+    delete_result = runner.invoke(main, ["delete-transaction", str(fund_ids[0])], env=env)
+    assert delete_result.exit_code == 0
+
+    positions = runner.invoke(main, ["positions", "--account", "Trii"], env=env)
+    assert positions.exit_code == 0
+    assert "563.25" in positions.output

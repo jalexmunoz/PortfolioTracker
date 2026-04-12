@@ -8,6 +8,7 @@ import pytest
 from portfolio_tracker_v2.core import Database
 from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 from portfolio_tracker_v2.core.exceptions import InvalidTransaction
+from portfolio_tracker_v2.services.pnl_svc import PnLService
 from portfolio_tracker_v2.services.transaction_svc import TransactionService
 
 
@@ -616,12 +617,12 @@ def test_inspect_lot_matches_by_buy_tx_id(transaction_svc):
 def test_record_cdt_manual_persists_contractual_metadata_and_asset_method(transaction_svc, db_connection):
     tx_id = transaction_svc.record_cdt(
         account='BBVA',
-        symbol='BBVA CDT',
-        open_date='2026-04-11',
-        maturity_date='2026-10-11',
-        principal=Decimal('5000'),
-        term_years=Decimal('0.5'),
-        annual_rate=Decimal('0.10'),
+        symbol='COLTEF CDT',
+        open_date='2026-01-26',
+        maturity_date='2026-06-23',
+        principal=Decimal('4661.13'),
+        term_years=Decimal('0.6'),
+        annual_rate=Decimal('0.102'),
     )
 
     conn = db_connection.connect()
@@ -631,8 +632,9 @@ def test_record_cdt_manual_persists_contractual_metadata_and_asset_method(transa
 
     assert tx_row[0] == 'BUY'
     assert Decimal(str(tx_row[1])) == Decimal('1')
-    assert Decimal(str(tx_row[2])) == Decimal('5000')
+    assert Decimal(str(tx_row[2])) == Decimal('4661.13')
     assert str(tx_row[3]).startswith('CDT_CONTRACT_V1:')
+    assert '"term_source":"derived_from_dates"' in str(tx_row[3])
 
     cursor.execute(
         """
@@ -646,32 +648,39 @@ def test_record_cdt_manual_persists_contractual_metadata_and_asset_method(transa
     assert cursor.fetchone()[0] == 'contractual_value'
 
 
-def test_record_cdt_rejects_second_open_contract_for_same_account_symbol(transaction_svc):
-    transaction_svc.record_cdt(
+def test_delete_transaction_allows_unmatched_manual_cdt(transaction_svc):
+    tx_id = transaction_svc.record_cdt(
         account='BBVA',
-        symbol='BBVA CDT',
-        open_date='2026-04-11',
-        maturity_date='2026-10-11',
-        principal=Decimal('5000'),
-        term_years=Decimal('0.5'),
-        annual_rate=Decimal('0.10'),
+        symbol='COLTEF CDT',
+        open_date='2026-01-26',
+        maturity_date='2026-06-23',
+        principal=Decimal('4661.13'),
+        term_years=None,
+        annual_rate=Decimal('0.102'),
     )
 
-    with pytest.raises(InvalidTransaction) as exc:
-        transaction_svc.record_cdt(
-            account='BBVA',
-            symbol='BBVA CDT',
-            open_date='2026-04-12',
-            maturity_date='2026-10-12',
-            principal=Decimal('1000'),
-            term_years=Decimal('0.5'),
-            annual_rate=Decimal('0.08'),
-        )
-
-    assert 'already has an open position' in str(exc.value)
+    deleted = transaction_svc.delete_transaction(tx_id)
+    assert deleted['id'] == tx_id
+    assert deleted['tx_type'] == 'BUY'
 
 
-def test_record_fund_movement_supports_contribution_withdrawal_and_blocks_negative(transaction_svc, db_connection):
+def test_record_fund_movement_uses_monetary_balance_and_no_artificial_realized_pnl(transaction_svc, db_connection):
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db_connection)
+    fund_asset = resolver.resolve('FONDO DINAMICO')
+    account_id = transaction_svc._get_or_create_account('Trii', cursor)
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund_asset['id'], account_id, 'MIGRATION_BUY', 1.0, 263.25, 0.0, 263.25, '2026-04-01', 'legacy seed'),
+    )
+    conn.commit()
+
     transaction_svc.record_fund_movement(
         account='Trii',
         symbol='FONDO DINAMICO',
@@ -687,23 +696,90 @@ def test_record_fund_movement_supports_contribution_withdrawal_and_blocks_negati
         movement_type='WITHDRAWAL',
     )
 
-    lots = transaction_svc.list_open_lots(account='Trii', symbol='FONDO DINAMICO')
-    assert len(lots) == 1
-    assert Decimal(str(lots[0]['remaining_qty'])) == Decimal('250')
+    rows = transaction_svc.list_transactions(account='Trii', symbol='FONDO DINAMICO', limit=10)
+    sell_row = next(r for r in rows if r['side'] == 'SELL')
+    assert sell_row['matched_cost_basis'] is None
+    assert sell_row['realized_pnl'] is None
+
+    pnl_svc = PnLService(db_connection, resolver)
+    pos = next(p for p in pnl_svc.positions('Trii') if p['symbol'] == 'FONDO DINAMICO')
+    assert pos['qty_open'] == Decimal('513.25')
+    assert pos['cost_basis'] == Decimal('513.25')
+    assert pos['avg_cost'] == Decimal('1')
+    assert pos['realized_pnl'] == Decimal('0')
+    assert pos['approved_value'] == Decimal('513.25')
+    assert pos['valuation_method'] == 'snapshot_imported'
+    assert pos['valuation_status'] == 'usable_non_market'
+
+
+def test_record_fund_movement_blocks_negative_monetary_balance(transaction_svc, db_connection):
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db_connection)
+    fund_asset = resolver.resolve('FONDO DINAMICO')
+    account_id = transaction_svc._get_or_create_account('Trii', cursor)
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund_asset['id'], account_id, 'MIGRATION_BUY', 1.0, 263.25, 0.0, 263.25, '2026-04-01', 'legacy seed'),
+    )
+    conn.commit()
 
     with pytest.raises(InvalidTransaction) as exc:
         transaction_svc.record_fund_movement(
             account='Trii',
             symbol='FONDO DINAMICO',
-            movement_date='2026-04-21',
-            amount=Decimal('999'),
+            movement_date='2026-04-20',
+            amount=Decimal('300'),
             movement_type='WITHDRAWAL',
         )
-    assert 'Insufficient holdings' in str(exc.value)
 
+    assert 'Insufficient fund balance' in str(exc.value)
+
+
+def test_delete_transaction_fund_movement_keeps_balance_consistent(transaction_svc, db_connection):
     conn = db_connection.connect()
     cursor = conn.cursor()
-    cursor.execute("SELECT valuation_method, current_price FROM assets WHERE symbol = 'FONDO DINAMICO'")
-    asset_row = cursor.fetchone()
-    assert asset_row[0] == 'snapshot_imported'
-    assert Decimal(str(asset_row[1])) == Decimal('1')
+    resolver = AssetResolver(db_connection)
+    fund_asset = resolver.resolve('FONDO DINAMICO')
+    account_id = transaction_svc._get_or_create_account('Trii', cursor)
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund_asset['id'], account_id, 'MIGRATION_BUY', 1.0, 263.25, 0.0, 263.25, '2026-04-01', 'legacy seed'),
+    )
+    conn.commit()
+
+    transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-11',
+        amount=Decimal('300'),
+        movement_type='CONTRIBUTION',
+    )
+    withdrawal_tx_id = transaction_svc.record_fund_movement(
+        account='Trii',
+        symbol='FONDO DINAMICO',
+        movement_date='2026-04-20',
+        amount=Decimal('50'),
+        movement_type='WITHDRAWAL',
+    )
+
+    pnl_svc = PnLService(db_connection, resolver)
+    before = next(p for p in pnl_svc.positions('Trii') if p['symbol'] == 'FONDO DINAMICO')
+    assert before['qty_open'] == Decimal('513.25')
+
+    deleted = transaction_svc.delete_transaction(withdrawal_tx_id)
+    assert deleted['tx_type'] == 'SELL'
+
+    after = next(p for p in pnl_svc.positions('Trii') if p['symbol'] == 'FONDO DINAMICO')
+    assert after['qty_open'] == Decimal('563.25')
+    assert after['cost_basis'] == Decimal('563.25')
