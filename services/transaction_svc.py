@@ -157,6 +157,101 @@ class TransactionService:
             ),
         )
 
+    def _infer_backfill_cash_movement(self, tx_type: str, notes: Optional[str]) -> Optional[tuple[str, str]]:
+        tx_type_normalized = (tx_type or "").strip().upper()
+        if tx_type_normalized not in ("BUY", "SELL"):
+            return None
+
+        note_text = (notes or "").strip()
+        if tx_type_normalized == "BUY" and note_text.startswith(self.CDT_CONTRACT_NOTE_PREFIX):
+            return "CDT_BUY", "Backfill cash delta from manual CDT"
+        if tx_type_normalized == "BUY" and note_text.startswith("FUND_CONTRIBUTION"):
+            return "FUND_CONTRIBUTION", "Backfill cash delta from fund movement"
+        if tx_type_normalized == "SELL" and note_text.startswith("FUND_WITHDRAWAL"):
+            return "FUND_WITHDRAWAL", "Backfill cash delta from fund movement"
+        if tx_type_normalized == "BUY":
+            return "BUY", "Backfill cash delta from BUY"
+        return "SELL", "Backfill cash delta from SELL"
+
+    def backfill_cash_ledger(self) -> dict:
+        """
+        Populate missing cash_ledger rows from historical BUY/SELL transactions.
+
+        Idempotent by tx_id: if a transaction already has one or more cash_ledger rows,
+        it is skipped.
+        """
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        inserted = 0
+        skipped_existing = 0
+        skipped_non_cash = 0
+        try:
+            cursor.execute(
+                """
+                SELECT
+                    t.id,
+                    t.account_id,
+                    t.tx_type,
+                    t.quantity,
+                    t.unit_price,
+                    t.fee_usd,
+                    t.notes,
+                    CASE
+                        WHEN EXISTS(SELECT 1 FROM cash_ledger cl WHERE cl.tx_id = t.id) THEN 1
+                        ELSE 0
+                    END AS has_cash_entry
+                FROM transactions t
+                ORDER BY t.id ASC
+                """
+            )
+            rows = cursor.fetchall()
+
+            for row in rows:
+                tx_id = int(row[0])
+                account_id = row[1]
+                tx_type_normalized = (row[2] or "").strip().upper()
+                qty = Decimal(str(row[3] or 0))
+                unit_price = Decimal(str(row[4] or 0))
+                fee = Decimal(str(row[5] or 0))
+                notes = row[6]
+                has_cash_entry = int(row[7] or 0) == 1
+
+                movement = self._infer_backfill_cash_movement(tx_type_normalized, notes)
+                if movement is None or account_id is None:
+                    skipped_non_cash += 1
+                    continue
+
+                if has_cash_entry:
+                    skipped_existing += 1
+                    continue
+
+                movement_type, note = movement
+                gross = qty * unit_price
+                if tx_type_normalized == "BUY":
+                    cash_delta = -(gross + fee)
+                else:
+                    cash_delta = gross - fee
+
+                self._record_cash_movement(
+                    cursor,
+                    tx_id=tx_id,
+                    account_id=int(account_id),
+                    movement_type=movement_type,
+                    amount_usd=cash_delta,
+                    note=note,
+                )
+                inserted += 1
+
+            conn.commit()
+            return {
+                "inserted": inserted,
+                "skipped_existing": skipped_existing,
+                "skipped_non_cash": skipped_non_cash,
+            }
+        except Exception:
+            conn.rollback()
+            raise
+
     def record_buy(
         self,
         symbol: str,
@@ -870,3 +965,4 @@ class TransactionService:
         except Exception:
             conn.rollback()
             raise
+

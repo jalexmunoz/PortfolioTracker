@@ -971,6 +971,34 @@ def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount,
         db.close()
 
 
+
+@main.command("backfill-cash-ledger")
+def cli_backfill_cash_ledger():
+    """Backfill historical cash_ledger rows from existing transactions."""
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+    try:
+        result = svc.backfill_cash_ledger()
+        inserted = int(result.get("inserted", 0))
+        skipped_existing = int(result.get("skipped_existing", 0))
+        skipped_non_cash = int(result.get("skipped_non_cash", 0))
+
+        if inserted == 0 and skipped_existing == 0:
+            click.echo("No eligible historical transactions found for backfill.")
+        elif inserted == 0:
+            click.echo("No new cash movements inserted; eligible transactions were already present in cash_ledger.")
+        else:
+            click.echo(f"Backfill complete: inserted {inserted} cash movement(s).")
+
+        click.echo(f"Skipped existing: {skipped_existing}")
+        click.echo(f"Skipped non-cash tx types: {skipped_non_cash}")
+    except Exception as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    finally:
+        db.close()
+
 @main.command("buy")
 @click.option("--symbol", required=True)
 @click.option("--account", required=True)
@@ -1652,3 +1680,4 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
+

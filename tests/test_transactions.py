@@ -819,6 +819,36 @@ def test_cash_ledger_tracks_buy_sell_and_account_scopes(transaction_svc, db_conn
     assert pnl_svc.cash_balance() == Decimal('-507')
 
 
+
+def test_delete_transaction_reverts_cash_for_backfilled_historical_buy(transaction_svc, db_connection):
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db_connection)
+    asset = resolver.resolve('BTC')
+    account_id = transaction_svc._get_or_create_account('Main', cursor)
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (asset['id'], account_id, 'BUY', 1.0, 100.0, 0.0, 100.0, '2026-04-12', 'legacy buy before B48'),
+    )
+    tx_id = cursor.lastrowid
+    conn.commit()
+
+    pnl_svc = PnLService(db_connection, resolver)
+    assert pnl_svc.cash_balance('Main') == Decimal('0')
+
+    backfill = transaction_svc.backfill_cash_ledger()
+    assert backfill['inserted'] == 1
+    assert backfill['skipped_existing'] == 0
+    assert pnl_svc.cash_balance('Main') == Decimal('-100')
+
+    transaction_svc.delete_transaction(tx_id)
+    assert pnl_svc.cash_balance('Main') == Decimal('0')
+
 def test_delete_transaction_reverts_cash_for_buy_and_sell(transaction_svc, db_connection):
     buy_id = transaction_svc.record_buy(
         symbol='BTC',
@@ -891,3 +921,4 @@ def test_cash_behavior_for_cdt_and_fund_movements(transaction_svc, db_connection
     pnl_svc = PnLService(db_connection, resolver)
     assert pnl_svc.cash_balance('BBVA') == Decimal('-4661.13')
     assert pnl_svc.cash_balance('Trii') == Decimal('-250')
+

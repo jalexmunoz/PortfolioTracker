@@ -3346,6 +3346,120 @@ def test_cash_summary_reflects_buy_sell_net_and_account_filter(tmp_path, monkeyp
     assert "Cash balance: -407.00" in account_summary.output
 
 
+
+def test_backfill_cash_ledger_historical_transactions_is_idempotent_and_updates_summary(tmp_path, monkeypatch):
+    db_file = tmp_path / "cash_backfill_historical.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    db = Database(str(db_file))
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    btc = resolver.resolve("BTC")
+    eth = resolver.resolve("ETH")
+    cdt = resolver.resolve("COLTEF CDT")
+    fund = resolver.resolve("FONDO DINAMICO")
+
+    trii_id = cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trii",)).lastrowid
+    bbva_id = cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("BBVA",)).lastrowid
+    trezor_id = cursor.execute("INSERT INTO accounts (name) VALUES (?)", ("Trezor",)).lastrowid
+
+    cdt_note = (
+        "CDT_CONTRACT_V1:{\"open_date\":\"2026-01-26\",\"maturity_date\":\"2026-06-23\","
+        "\"principal\":\"4661.13\",\"term_years\":\"0.40821918\",\"annual_rate\":\"0.102\","
+        "\"term_source\":\"derived_from_dates\"}"
+    )
+
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund["id"], trii_id, "MIGRATION_BUY", 1.0, 263.25, 0.0, 263.25, "2026-04-01", "legacy seed"),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (btc["id"], trii_id, "BUY", 1.0, 100.0, 1.0, 101.0, "2026-04-02", "legacy buy"),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (btc["id"], trii_id, "SELL", 0.5, 120.0, 2.0, 58.0, "2026-04-03", "legacy sell"),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (cdt["id"], bbva_id, "BUY", 1.0, 4661.13, 0.0, 4661.13, "2026-01-26", cdt_note),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund["id"], trii_id, "BUY", 1.0, 300.0, 0.0, 300.0, "2026-04-11", "FUND_CONTRIBUTION | manual"),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (fund["id"], trii_id, "SELL", 1.0, 50.0, 0.0, 50.0, "2026-04-20", "FUND_WITHDRAWAL"),
+    )
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (eth["id"], trezor_id, "BUY", 2.0, 50.0, 0.0, 100.0, "2026-04-05", "legacy buy"),
+    )
+    conn.commit()
+    db.close()
+
+    first_run = runner.invoke(main, ["backfill-cash-ledger"], env=env)
+    assert first_run.exit_code == 0
+    assert "Backfill complete: inserted 6 cash movement(s)." in first_run.output
+    assert "Skipped existing: 0" in first_run.output
+    assert "Skipped non-cash tx types: 1" in first_run.output
+
+    total_summary = runner.invoke(main, ["summary", "--output-json", "-"], env=env)
+    assert total_summary.exit_code == 0
+    total_payload = json.loads(total_summary.output)
+    assert total_payload["cash_balance"] == -5054.13
+
+    trii_summary = runner.invoke(main, ["summary", "--account", "Trii", "--output-json", "-"], env=env)
+    assert trii_summary.exit_code == 0
+    trii_payload = json.loads(trii_summary.output)
+    assert trii_payload["cash_balance"] == -293.0
+
+    trezor_summary = runner.invoke(main, ["summary", "--account", "Trezor", "--output-json", "-"], env=env)
+    assert trezor_summary.exit_code == 0
+    trezor_payload = json.loads(trezor_summary.output)
+    assert trezor_payload["cash_balance"] == -100.0
+
+    second_run = runner.invoke(main, ["backfill-cash-ledger"], env=env)
+    assert second_run.exit_code == 0
+    assert "No new cash movements inserted; eligible transactions were already present in cash_ledger." in second_run.output
+    assert "Skipped existing: 6" in second_run.output
+    assert "Skipped non-cash tx types: 1" in second_run.output
+
 def test_cash_summary_delete_transaction_reverts_cash(tmp_path, monkeypatch):
     db_file = tmp_path / "cash_delete_revert.db"
     env = {"PORTFOLIO_DB_PATH": str(db_file)}
@@ -3457,3 +3571,4 @@ def test_cash_behavior_cdt_and_fund_movements(tmp_path, monkeypatch):
     assert trii_summary.exit_code == 0
     trii_payload = json.loads(trii_summary.output)
     assert trii_payload["cash_balance"] == -250.0
+
