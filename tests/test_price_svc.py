@@ -505,11 +505,14 @@ def test_refresh_prices_inactive_asset_is_ignored(db):
 
 # --- B49: GLD / SLV valuation mapping ---
 
-def test_resolve_provider_gld_routes_to_alpha_vantage():
+def test_resolve_provider_gld_routes_to_tradingview_amex():
+    # GLD: AV free tier returns no data; overridden to TradingView AMEX (Post-B49.1)
     resolution = resolve_provider('GLD', 'stock_us')
     assert resolution.status == 'ok'
-    assert resolution.provider == 'alpha_vantage'
+    assert resolution.provider == 'tradingview'
     assert resolution.provider_symbol == 'GLD'
+    assert resolution.exchange == 'AMEX'
+    assert resolution.price_source == 'tradingview_amex_etf'
 
 
 def test_resolve_provider_slv_routes_to_tradingview_amex():
@@ -582,4 +585,25 @@ def test_refresh_prices_slv_uses_tradingview(db):
     cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'SLV'")
     row = cursor.fetchone()
     assert row[0] == pytest.approx(69.1)
+    assert row[1] == "tradingview_amex_etf"
+
+
+def test_refresh_prices_gld_uses_tradingview(db):
+    add_active_holding(db, 'GLD', 'stock_us')
+
+    filled_df = pd.DataFrame([{"open": 305.0, "high": 306.0, "low": 304.5, "close": 305.5, "volume": 1.0}])
+    with patch("portfolio_tracker_v2.services.tradingview_fetcher.get_tradingview_ohlc") as mock_tv:
+        mock_tv.return_value = filled_df
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "tradingview"
+    assert report.results[0].provider_symbol == "GLD"
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'GLD'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(305.5)
     assert row[1] == "tradingview_amex_etf"

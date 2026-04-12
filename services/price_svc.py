@@ -51,6 +51,7 @@ TRADINGVIEW_STOCK_INTL_MAP = {
 
 # US ETFs where Alpha Vantage free tier returns no data; fetched via TradingView instead.
 TRADINGVIEW_US_ETF_MAP = {
+    "GLD": {"tradingview_symbol": "GLD", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
     "SLV": {"tradingview_symbol": "SLV", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
 }
 
