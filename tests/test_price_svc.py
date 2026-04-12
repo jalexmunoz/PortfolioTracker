@@ -8,11 +8,13 @@ import pytest
 
 from portfolio_tracker_v2 import config
 from portfolio_tracker_v2.core import Database
+from portfolio_tracker_v2.core.asset_resolver import AssetResolver
 from portfolio_tracker_v2.services.price_svc import (
     ProviderResolution,
     get_crypto_price,
     get_tradingview_stock_intl_price,
     refresh_prices,
+    resolve_provider,
 )
 
 
@@ -499,3 +501,61 @@ def test_refresh_prices_inactive_asset_is_ignored(db):
     assert report.failed_final == 0
     assert report.results == []
     mock_get.assert_not_called()
+
+
+# --- B49: GLD / SLV valuation mapping ---
+
+def test_resolve_provider_gld_routes_to_alpha_vantage():
+    resolution = resolve_provider('GLD', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'alpha_vantage'
+    assert resolution.provider_symbol == 'GLD'
+
+
+def test_resolve_provider_slv_routes_to_alpha_vantage():
+    resolution = resolve_provider('SLV', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'alpha_vantage'
+    assert resolution.provider_symbol == 'SLV'
+
+
+def test_asset_resolver_creates_gld_as_stock_us(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('GLD')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_creates_slv_as_stock_us(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('SLV')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_heals_gld_unknown_to_stock_us(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO assets (symbol, asset_type, is_active, valuation_method) VALUES ('GLD', 'UNKNOWN', 1, 'unvalued')"
+    )
+    conn.commit()
+
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('GLD')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_heals_slv_unknown_to_stock_us(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO assets (symbol, asset_type, is_active, valuation_method) VALUES ('SLV', 'UNKNOWN', 1, 'unvalued')"
+    )
+    conn.commit()
+
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('SLV')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'

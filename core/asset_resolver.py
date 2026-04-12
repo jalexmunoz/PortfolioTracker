@@ -55,6 +55,10 @@ class AssetResolver:
         'BCH': 'crypto',
         'BNB': 'crypto',
         
+        # US ETFs - Precious Metals
+        'GLD': 'stock_us',   # SPDR Gold Shares
+        'SLV': 'stock_us',   # iShares Silver Trust
+
         # US Stocks
         'AAPL': 'stock_us',
         'MSFT': 'stock_us',
@@ -178,6 +182,15 @@ class AssetResolver:
         asset = self._get_asset_internal(symbol_resolved)
         
         if asset:
+            if asset['asset_type'] == 'UNKNOWN':
+                known_type = self._hardcoded_type(symbol_resolved)
+                if known_type:
+                    new_method = self._default_valuation_method(symbol_resolved, known_type)
+                    self.db.execute(
+                        "UPDATE assets SET asset_type = ?, valuation_method = ? WHERE id = ?",
+                        (known_type, new_method, asset['id'])
+                    )
+                    asset = self._get_asset_internal(symbol_resolved)
             return asset
         
         # Auto-create with UNKNOWN type
