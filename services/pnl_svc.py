@@ -392,6 +392,11 @@ class PnLService:
                 total_open_qty += remaining_qty
 
             avg_cost = (cost_basis / total_open_qty) if total_open_qty > 0 else Decimal('0')
+
+            # Skip fully-settled positions (e.g. CDT after settlement)
+            if total_open_qty == 0 and qty_open == 0:
+                continue
+
             realized = self.realized_pnl(sym, acct)
 
             cursor.execute(
@@ -539,9 +544,10 @@ class PnLService:
             'Non-market': Decimal('0'),
         }
 
+        total_realized = self.realized_pnl(account=account)
+
         for p in positions:
             total_cost_basis += p['cost_basis']
-            total_realized += p['realized_pnl']
 
             if p['valuation_method'] == 'market_live':
                 price_quality_counts[p['valuation_status']] += 1

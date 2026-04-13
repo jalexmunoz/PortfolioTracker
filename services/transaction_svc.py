@@ -966,3 +966,167 @@ class TransactionService:
             conn.rollback()
             raise
 
+    def settle_cdt(self, buy_tx_id: int, settlement_date: str) -> dict:
+        """
+        Settle (liquidate) a CDT at maturity.
+
+        Records a SELL tx at maturity_value (principal + interest) against
+        the original BUY lot, which closes the position via lot_match and
+        books the full payout into cash_ledger. The realized PnL (interest
+        only) is derived automatically by the lot_match formula:
+            realized = maturity_value - principal.
+
+        Args:
+            buy_tx_id: ID of the original CDT BUY transaction.
+            settlement_date: Date of settlement (YYYY-MM-DD, must be >= maturity_date).
+
+        Returns:
+            dict with sell_tx_id, principal, interest, maturity_value.
+
+        Raises:
+            InvalidTransaction on invalid state.
+        """
+        if buy_tx_id <= 0:
+            raise InvalidTransaction("buy_tx_id must be positive")
+
+        settlement_date_iso = self._parse_iso_date(settlement_date, "settlement_date")
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            # Fetch and validate the original BUY transaction
+            cursor.execute(
+                """
+                SELECT t.id, t.tx_type, t.quantity, t.unit_price, t.notes,
+                       a.symbol, a.id AS asset_id,
+                       acc.id AS account_id, acc.name AS account_name
+                FROM transactions t
+                JOIN assets a ON a.id = t.asset_id
+                JOIN accounts acc ON acc.id = t.account_id
+                WHERE t.id = ?
+                """,
+                (buy_tx_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise InvalidTransaction(f"Transaction {buy_tx_id} does not exist")
+
+            tx_type = row[1]
+            if tx_type not in ("BUY", "MIGRATION_BUY"):
+                raise InvalidTransaction(
+                    f"Transaction {buy_tx_id} is of type '{tx_type}'; settle-cdt requires a BUY transaction"
+                )
+
+            notes = row[4] or ""
+            if self.CDT_CONTRACT_NOTE_PREFIX not in notes:
+                raise InvalidTransaction(
+                    f"Transaction {buy_tx_id} does not appear to be a CDT (missing contract note prefix)"
+                )
+
+            qty = Decimal(str(row[2]))
+            principal = Decimal(str(row[3])) * qty  # unit_price * qty
+            symbol = row[5]
+            asset_id = row[6]
+            account_id = row[7]
+            account_name = row[8]
+
+            # Parse contract from notes
+            note_text = notes.strip()
+            payload_text = note_text[len(self.CDT_CONTRACT_NOTE_PREFIX):]
+            if " | " in payload_text:
+                payload_text = payload_text.split(" | ", 1)[0].strip()
+            try:
+                contract = json.loads(payload_text)
+            except json.JSONDecodeError as exc:
+                raise InvalidTransaction(f"Cannot parse CDT contract notes for tx {buy_tx_id}") from exc
+
+            maturity_date_iso = contract.get("maturity_date")
+            if not maturity_date_iso:
+                raise InvalidTransaction(f"CDT contract for tx {buy_tx_id} is missing maturity_date")
+
+            term_years = Decimal(str(contract.get("term_years", "0")))
+            annual_rate = Decimal(str(contract.get("annual_rate", "0")))
+
+            settlement_date_obj = datetime.strptime(settlement_date_iso, "%Y-%m-%d").date()
+            maturity_date_obj = datetime.strptime(maturity_date_iso, "%Y-%m-%d").date()
+
+            if settlement_date_obj < maturity_date_obj:
+                raise InvalidTransaction(
+                    f"settlement_date {settlement_date_iso} is before maturity_date {maturity_date_iso}; "
+                    "early redemption is not supported"
+                )
+
+            # Check not already settled (BUY lot fully matched)
+            cursor.execute(
+                "SELECT COALESCE(SUM(quantity), 0) FROM lot_matches WHERE buy_tx_id = ?",
+                (buy_tx_id,),
+            )
+            matched_qty = Decimal(str(cursor.fetchone()[0] or 0))
+            remaining_qty = qty - matched_qty
+            if remaining_qty <= 0:
+                raise InvalidTransaction(
+                    f"CDT transaction {buy_tx_id} is already fully settled"
+                )
+
+            # Calculate maturity value (simple interest)
+            interest = principal * term_years * annual_rate
+            maturity_value = principal + interest
+
+            if maturity_value <= 0:
+                raise InvalidTransaction("Computed maturity_value is not positive; check CDT contract parameters")
+
+            # Insert SELL settlement transaction
+            settlement_note = f"CDT_SETTLEMENT:buy_tx_id={buy_tx_id} maturity_date={maturity_date_iso}"
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_id,
+                    account_id,
+                    "SELL",
+                    float(qty),
+                    float(maturity_value / qty),  # unit_price = maturity_value per unit
+                    0.0,
+                    float(maturity_value),
+                    settlement_date_iso,
+                    settlement_note,
+                ),
+            )
+            sell_tx_id = cursor.lastrowid
+
+            # Create lot_match: closes the BUY lot, drives realized PnL = interest
+            cursor.execute(
+                """
+                INSERT INTO lot_matches (buy_tx_id, sell_tx_id, quantity, buy_fee_alloc, sell_fee_alloc)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (buy_tx_id, sell_tx_id, float(qty), 0.0, 0.0),
+            )
+
+            # Record cash inflow: full maturity_value
+            self._record_cash_movement(
+                cursor,
+                tx_id=sell_tx_id,
+                account_id=account_id,
+                movement_type="CDT_SETTLEMENT",
+                amount_usd=maturity_value,
+                note=f"CDT settlement: principal={principal} interest={interest}",
+            )
+
+            conn.commit()
+            return {
+                "buy_tx_id": buy_tx_id,
+                "sell_tx_id": sell_tx_id,
+                "symbol": symbol,
+                "account": account_name,
+                "principal": principal,
+                "interest": interest,
+                "maturity_value": maturity_value,
+                "settlement_date": settlement_date_iso,
+            }
+        except Exception:
+            conn.rollback()
+            raise

@@ -878,6 +878,127 @@ def test_delete_transaction_reverts_cash_for_buy_and_sell(transaction_svc, db_co
     assert pnl_svc.cash_balance('Main') == Decimal('0')
 
 
+# --- B50: CDT settlement ---
+
+def _make_cdt(transaction_svc):
+    """Helper: record a COLTEF CDT, return (tx_id, principal, term_years, annual_rate, maturity_date)."""
+    principal = Decimal('1000')
+    annual_rate = Decimal('0.10')
+    tx_id = transaction_svc.record_cdt(
+        account='Main',
+        symbol='COLTEF CDT',
+        open_date='2026-01-01',
+        maturity_date='2026-07-01',
+        principal=principal,
+        term_years=None,
+        annual_rate=annual_rate,
+    )
+    # derived term_years = 181/365
+    derived_term = Decimal('181') / Decimal('365')
+    return tx_id, principal, derived_term, annual_rate, '2026-07-01'
+
+
+def test_settle_cdt_contractual_amounts(transaction_svc, db_connection):
+    buy_tx_id, principal, term_years, annual_rate, maturity_date = _make_cdt(transaction_svc)
+    result = transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+
+    expected_interest = (principal * term_years * annual_rate).quantize(Decimal('0.00000001'))
+    expected_maturity = principal + expected_interest
+
+    assert result['buy_tx_id'] == buy_tx_id
+    assert result['sell_tx_id'] > buy_tx_id
+    assert result['principal'] == principal
+    assert abs(result['interest'] - expected_interest) < Decimal('0.0001')
+    assert abs(result['maturity_value'] - expected_maturity) < Decimal('0.0001')
+    assert result['settlement_date'] == '2026-07-01'
+
+
+def test_settle_cdt_closes_position(transaction_svc, db_connection, setup_test_db):
+    buy_tx_id, _, _, _, _ = _make_cdt(transaction_svc)
+    transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+    positions = pnl.positions(account='Main')
+    cdt_positions = [p for p in positions if p['symbol'] == 'COLTEF CDT']
+    assert cdt_positions == [], "Settled CDT must not appear in open positions"
+
+
+def test_settle_cdt_cash_impact(transaction_svc, db_connection, setup_test_db):
+    buy_tx_id, principal, term_years, annual_rate, _ = _make_cdt(transaction_svc)
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+
+    # Before settlement: cash negative (CDT_BUY cost principal)
+    cash_before = pnl.cash_balance(account='Main')
+    assert cash_before == -principal
+
+    transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+
+    cash_after = pnl.cash_balance(account='Main')
+    expected_interest = principal * term_years * annual_rate
+    expected_cash = -principal + (principal + expected_interest)
+    assert cash_after.quantize(Decimal('0.00001')) == expected_cash.quantize(Decimal('0.00001'))
+
+
+def test_settle_cdt_realized_pnl_is_interest_only(transaction_svc, db_connection, setup_test_db):
+    buy_tx_id, principal, term_years, annual_rate, _ = _make_cdt(transaction_svc)
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+
+    transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+
+    realized = pnl.realized_pnl(account='Main')
+    expected_interest = principal * term_years * annual_rate
+    assert realized.quantize(Decimal('0.00001')) == expected_interest.quantize(Decimal('0.00001'))
+
+
+def test_settle_cdt_before_maturity_raises(transaction_svc):
+    buy_tx_id, _, _, _, _ = _make_cdt(transaction_svc)
+    with pytest.raises(InvalidTransaction, match="before maturity_date"):
+        transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-06-30')
+
+
+def test_settle_cdt_double_settlement_raises(transaction_svc):
+    buy_tx_id, _, _, _, _ = _make_cdt(transaction_svc)
+    transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+    with pytest.raises(InvalidTransaction, match="already fully settled"):
+        transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+
+
+def test_settle_cdt_on_non_cdt_raises(transaction_svc):
+    buy_id = transaction_svc.record_buy(
+        symbol='BTC', account='Main', qty=Decimal('1'),
+        unit_price=Decimal('100'), fee_usd=Decimal('0'), tx_date='2026-01-01',
+    )
+    with pytest.raises(InvalidTransaction, match="does not appear to be a CDT"):
+        transaction_svc.settle_cdt(buy_tx_id=buy_id, settlement_date='2026-07-01')
+
+
+def test_settle_cdt_delete_reverses_correctly(transaction_svc, db_connection, setup_test_db):
+    buy_tx_id, principal, _, _, _ = _make_cdt(transaction_svc)
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+
+    result = transaction_svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date='2026-07-01')
+    sell_tx_id = result['sell_tx_id']
+
+    # Positions empty after settle
+    assert pnl.positions(account='Main') == []
+
+    # Delete the settlement
+    transaction_svc.delete_transaction(sell_tx_id)
+
+    # CDT re-emerges as open position
+    positions = pnl.positions(account='Main')
+    assert any(p['symbol'] == 'COLTEF CDT' for p in positions), "CDT must reappear after delete"
+
+    # Cash back to pre-settlement state
+    assert pnl.cash_balance(account='Main') == -principal
+
+    # Realized PnL back to zero
+    assert pnl.realized_pnl(account='Main') == Decimal('0')
+
 def test_cash_behavior_for_cdt_and_fund_movements(transaction_svc, db_connection):
     conn = db_connection.connect()
     cursor = conn.cursor()

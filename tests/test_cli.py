@@ -3574,3 +3574,122 @@ def test_cash_behavior_cdt_and_fund_movements(tmp_path, monkeypatch):
     trii_payload = json.loads(trii_summary.output)
     assert trii_payload["cash_balance"] == -250.0
 
+
+# --- B50: settle-cdt CLI tests ---
+
+def _add_cdt_and_get_tx_id(runner, env, account="BBVA", symbol="COLTEF CDT",
+                            open_date="2026-01-01", maturity_date="2026-07-01",
+                            principal="1000", rate="0.10"):
+    result = runner.invoke(
+        main,
+        ["add-cdt", "--account", account, "--symbol", symbol,
+         "--open-date", open_date, "--maturity-date", maturity_date,
+         "--principal", principal, "--rate", rate],
+        env=env,
+    )
+    assert result.exit_code == 0, result.output
+    # parse: "OK: CDT recorded id=N ..."
+    for token in result.output.split():
+        if token.startswith("id="):
+            return int(token.split("=")[1])
+    raise AssertionError(f"Could not parse tx_id from: {result.output}")
+
+
+def test_settle_cdt_success(tmp_path, monkeypatch):
+    db_file = tmp_path / "settle_cdt.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    tx_id = _add_cdt_and_get_tx_id(runner, env)
+
+    result = runner.invoke(
+        main,
+        ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-07-01"],
+        env=env,
+    )
+    assert result.exit_code == 0
+    assert "OK: CDT settled" in result.output
+    assert f"buy_tx_id={tx_id}" in result.output
+    assert "principal=1,000.00" in result.output
+    assert "interest=" in result.output
+    assert "maturity_value=" in result.output
+
+
+def test_settle_cdt_position_disappears(tmp_path, monkeypatch):
+    db_file = tmp_path / "settle_cdt_pos.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    tx_id = _add_cdt_and_get_tx_id(runner, env)
+
+    # CDT visible before settlement
+    pos_before = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
+    assert "COLTEF CDT" in pos_before.output
+
+    runner.invoke(main, ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-07-01"], env=env)
+
+    # CDT gone after settlement
+    pos_after = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
+    assert "COLTEF CDT" not in pos_after.output
+
+
+def test_settle_cdt_cash_and_pnl(tmp_path, monkeypatch):
+    db_file = tmp_path / "settle_cdt_cash.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    tx_id = _add_cdt_and_get_tx_id(runner, env)
+
+    summary_before = runner.invoke(main, ["summary", "--account", "BBVA", "--output-json", "-"], env=env)
+    payload_before = json.loads(summary_before.output)
+    assert payload_before["cash_balance"] == -1000.0
+
+    runner.invoke(main, ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-07-01"], env=env)
+
+    summary_after = runner.invoke(main, ["summary", "--account", "BBVA", "--output-json", "-"], env=env)
+    payload_after = json.loads(summary_after.output)
+
+    # Cash rose: principal returned + interest
+    assert payload_after["cash_balance"] > payload_before["cash_balance"]
+    # Realized PnL is interest only (positive)
+    assert payload_after["total_realized_pnl"] > 0.0
+    # Non-market valued is now 0 (CDT closed)
+    assert payload_after["non_market_valued"] == 0.0
+
+
+def test_settle_cdt_before_maturity_rejected(tmp_path, monkeypatch):
+    db_file = tmp_path / "settle_cdt_early.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    tx_id = _add_cdt_and_get_tx_id(runner, env)
+
+    result = runner.invoke(
+        main,
+        ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-06-30"],
+        env=env,
+    )
+    assert result.exit_code == 2
+    assert "before maturity_date" in result.output
+
+
+def test_settle_cdt_double_settlement_rejected(tmp_path, monkeypatch):
+    db_file = tmp_path / "settle_cdt_double.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+    tx_id = _add_cdt_and_get_tx_id(runner, env)
+
+    runner.invoke(main, ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-07-01"], env=env)
+    result = runner.invoke(
+        main,
+        ["settle-cdt", "--tx-id", str(tx_id), "--settlement-date", "2026-07-01"],
+        env=env,
+    )
+    assert result.exit_code == 2
+    assert "already fully settled" in result.output

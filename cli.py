@@ -920,6 +920,35 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
         db.close()
 
 
+@main.command("settle-cdt")
+@click.option("--tx-id", "buy_tx_id", required=True, type=int, help="ID of the original CDT BUY transaction.")
+@click.option("--settlement-date", "settlement_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+def cli_settle_cdt(buy_tx_id, settlement_date):
+    """Settle a CDT at maturity: closes position, books cash and realized interest."""
+    settlement_date_iso = settlement_date.date().isoformat()
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+    try:
+        result = svc.settle_cdt(buy_tx_id=buy_tx_id, settlement_date=settlement_date_iso)
+        click.echo(
+            f"OK: CDT settled "
+            f"buy_tx_id={result['buy_tx_id']} "
+            f"sell_tx_id={result['sell_tx_id']} "
+            f"symbol={result['symbol']} "
+            f"account={result['account']} "
+            f"principal={format_money(result['principal'])} "
+            f"interest={format_money(result['interest'])} "
+            f"maturity_value={format_money(result['maturity_value'])} "
+            f"settlement_date={result['settlement_date']}"
+        )
+    except InvalidTransaction as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    finally:
+        db.close()
+
+
 @main.command("add-fund-movement")
 @click.option("--account", required=True)
 @click.option("--symbol", required=True)
