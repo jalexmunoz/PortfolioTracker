@@ -529,7 +529,6 @@ class PnLService:
     def summary(self, account: Optional[str] = None) -> dict:
         positions = self.positions(account)
         total_cost_basis = Decimal('0')
-        total_realized = Decimal('0')
         total_equity = Decimal('0')
         market_covered_value = Decimal('0')
         non_market_valued = Decimal('0')
