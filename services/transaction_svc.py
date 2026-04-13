@@ -532,12 +532,6 @@ class TransactionService:
         try:
             asset = self.resolver.resolve(symbol_name)
             account_id = self._get_or_create_account(account_name, cursor)
-            open_qty = self._open_qty_for_asset_account(cursor, asset["id"], account_id)
-            if open_qty > 0:
-                raise InvalidTransaction(
-                    f"{symbol_name} already has an open position for account {account_name}; "
-                    "close it before adding a new manual CDT"
-                )
 
             cursor.execute(
                 """

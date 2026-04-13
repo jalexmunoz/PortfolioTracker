@@ -3693,3 +3693,43 @@ def test_settle_cdt_double_settlement_rejected(tmp_path, monkeypatch):
     )
     assert result.exit_code == 2
     assert "already fully settled" in result.output
+
+
+def test_multiple_cdt_coexist_and_settle_independently(tmp_path, monkeypatch):
+    db_file = tmp_path / "multi_cdt.db"
+    env = {"PORTFOLIO_DB_PATH": str(db_file)}
+    runner = CliRunner()
+
+    assert runner.invoke(main, ["init-db"], env=env).exit_code == 0
+
+    tx1 = _add_cdt_and_get_tx_id(runner, env, principal="1000", rate="0.10",
+                                  open_date="2026-01-01", maturity_date="2026-07-01")
+    tx2 = _add_cdt_and_get_tx_id(runner, env, principal="2000", rate="0.08",
+                                  open_date="2026-02-01", maturity_date="2026-08-01")
+    assert tx1 != tx2
+
+    # Both visible in positions
+    pos = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
+    assert pos.exit_code == 0
+    assert "COLTEF CDT" in pos.output
+
+    # Both visible in list-transactions
+    txns = runner.invoke(main, ["list-transactions", "--symbol", "COLTEF CDT"], env=env)
+    assert txns.exit_code == 0
+
+    # Settle first CDT
+    settle = runner.invoke(main, ["settle-cdt", "--tx-id", str(tx1), "--settlement-date", "2026-07-01"], env=env)
+    assert settle.exit_code == 0
+    assert "principal=1,000.00" in settle.output
+
+    # Second CDT still visible
+    pos_after = runner.invoke(main, ["positions", "--account", "BBVA"], env=env)
+    assert pos_after.exit_code == 0
+    assert "COLTEF CDT" in pos_after.output
+
+    # Summary: cash and pnl reflect only first settlement
+    summary = runner.invoke(main, ["summary", "--account", "BBVA", "--output-json", "-"], env=env)
+    payload = json.loads(summary.output)
+    assert payload["cash_balance"] > -3000.0
+    assert payload["total_realized_pnl"] > 0.0
+    assert payload["non_market_valued"] > 0.0  # second CDT still valued

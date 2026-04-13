@@ -999,6 +999,70 @@ def test_settle_cdt_delete_reverses_correctly(transaction_svc, db_connection, se
     # Realized PnL back to zero
     assert pnl.realized_pnl(account='Main') == Decimal('0')
 
+
+def test_multiple_cdt_same_account_symbol(transaction_svc, db_connection, setup_test_db):
+    """Multiple CDTs with same account+symbol can coexist."""
+    tx1 = transaction_svc.record_cdt(
+        account='BBVA', symbol='COLTEF CDT',
+        open_date='2026-01-01', maturity_date='2026-07-01',
+        principal=Decimal('1000'), term_years=None, annual_rate=Decimal('0.10'),
+    )
+    tx2 = transaction_svc.record_cdt(
+        account='BBVA', symbol='COLTEF CDT',
+        open_date='2026-02-01', maturity_date='2026-08-01',
+        principal=Decimal('2000'), term_years=None, annual_rate=Decimal('0.08'),
+    )
+    assert tx1 != tx2
+
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+
+    positions = pnl.positions(account='BBVA')
+    cdt = [p for p in positions if p['symbol'] == 'COLTEF CDT']
+    assert len(cdt) == 1
+    assert cdt[0]['qty_open'] == Decimal('2')
+    assert cdt[0]['cost_basis'] == Decimal('3000')
+
+    assert pnl.cash_balance(account='BBVA') == Decimal('-3000')
+
+
+def test_settle_one_of_multiple_cdts(transaction_svc, db_connection, setup_test_db):
+    """Settling one CDT leaves others open."""
+    tx1 = transaction_svc.record_cdt(
+        account='BBVA', symbol='COLTEF CDT',
+        open_date='2026-01-01', maturity_date='2026-07-01',
+        principal=Decimal('1000'), term_years=None, annual_rate=Decimal('0.10'),
+    )
+    tx2 = transaction_svc.record_cdt(
+        account='BBVA', symbol='COLTEF CDT',
+        open_date='2026-02-01', maturity_date='2026-08-01',
+        principal=Decimal('2000'), term_years=None, annual_rate=Decimal('0.08'),
+    )
+
+    resolver = AssetResolver(setup_test_db)
+    pnl = PnLService(setup_test_db, resolver)
+
+    result = transaction_svc.settle_cdt(buy_tx_id=tx1, settlement_date='2026-07-01')
+    assert result['principal'] == Decimal('1000')
+
+    # Second CDT still open
+    positions = pnl.positions(account='BBVA')
+    cdt = [p for p in positions if p['symbol'] == 'COLTEF CDT']
+    assert len(cdt) == 1
+    assert cdt[0]['qty_open'] == Decimal('1')
+    assert cdt[0]['cost_basis'] == Decimal('2000')
+
+    # Cash: -1000 (buy1) - 2000 (buy2) + maturity_value_1
+    cash = pnl.cash_balance(account='BBVA')
+    assert cash > Decimal('-3000')
+    assert cash < Decimal('0')
+
+    # Realized PnL: only interest from CDT #1
+    realized = pnl.realized_pnl(account='BBVA')
+    assert realized > Decimal('0')
+    assert abs(realized - result['interest']) < Decimal('0.001')
+
+
 def test_cash_behavior_for_cdt_and_fund_movements(transaction_svc, db_connection):
     conn = db_connection.connect()
     cursor = conn.cursor()
