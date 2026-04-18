@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Init DB</h1>
+
+{% if active.mode == 'PROD' %}
+<div class="panel panel-danger">
+  <strong>PROD mode</strong> &mdash; This will initialize the production database.
+</div>
+{% endif %}
+
+<div class="panel">
+  <p>Initialize schema and default assets on: <code>{{ active.db_path }}</code></p>
+  <form method="post">
+    <button type="submit">Initialize Database</button>
+  </form>
+</div>
+{% endblock %}

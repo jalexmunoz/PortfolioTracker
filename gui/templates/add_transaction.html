@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Add Transaction</h1>
+
+{% if active.mode == 'PROD' %}
+<div class="panel panel-danger">
+  <strong>PROD mode</strong> &mdash; This will write to the production database.
+</div>
+{% endif %}
+
+<div class="panel">
+  <form method="post">
+    <label for="side">Side</label>
+    <select id="side" name="side" required>
+      <option value="BUY">BUY</option>
+      <option value="SELL">SELL</option>
+    </select>
+
+    <label for="account">Account</label>
+    <input type="text" id="account" name="account" required placeholder="e.g. Binance">
+
+    <label for="symbol">Symbol</label>
+    <input type="text" id="symbol" name="symbol" required placeholder="e.g. BTC">
+
+    <label for="tx_date">Date (YYYY-MM-DD, blank = today)</label>
+    <input type="text" id="tx_date" name="tx_date" placeholder="2024-01-15">
+
+    <label for="qty">Quantity</label>
+    <input type="text" id="qty" name="qty" required placeholder="0.5">
+
+    <label for="price">Unit Price (USD)</label>
+    <input type="text" id="price" name="price" required placeholder="50000">
+
+    <label for="fee">Fee (USD, default 0)</label>
+    <input type="text" id="fee" name="fee" value="0">
+
+    <label for="notes">Notes (optional)</label>
+    <input type="text" id="notes" name="notes">
+
+    <button type="submit">Record Transaction</button>
+  </form>
+</div>
+{% endblock %}

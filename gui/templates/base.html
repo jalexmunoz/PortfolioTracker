@@ -9,11 +9,15 @@
   <body>
     <header class="topbar">
       <div class="topbar-main">
-        <strong class="app-name">PortfolioTracker GUI v0.1 (H1)</strong>
+        <strong class="app-name">PortfolioTracker GUI v0.2 (H2)</strong>
         <nav>
           <a href="{{ url_for('gui.home') }}">Home</a>
-          <a href="{{ url_for('gui.db_context') }}">Change DB</a>
-          <a href="{{ url_for('gui.backup') }}">Manual Backup</a>
+          <a href="{{ url_for('gui.db_context') }}">DB</a>
+          <a href="{{ url_for('gui.backup') }}">Backup</a>
+          <a href="{{ url_for('gui.transactions') }}">Transactions</a>
+          <a href="{{ url_for('gui.positions') }}">Positions</a>
+          <a href="{{ url_for('gui.summary') }}">Summary</a>
+          <a href="{{ url_for('gui.daily_report') }}">Daily Report</a>
         </nav>
       </div>
 

@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Positions</h1>
+
+<div class="panel">
+  <form method="get" class="filter-form">
+    <label for="account">Account</label>
+    <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
+    <button type="submit">Filter</button>
+  </form>
+</div>
+
+{% if rows %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Account</th>
+        <th class="num">Qty</th>
+        <th class="num">Avg Cost</th>
+        <th class="num">Cost Basis</th>
+        <th>Val Method</th>
+        <th>Val Status</th>
+        <th>Alert</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in rows %}
+      <tr>
+        <td>{{ p.symbol }}</td>
+        <td>{{ p.account or '(all)' }}</td>
+        <td class="num">{{ format_qty(p.qty_open) }}</td>
+        <td class="num">{{ format_money(p.avg_cost) }}</td>
+        <td class="num">{{ format_money(p.cost_basis) }}</td>
+        <td>{{ p.valuation_method }}</td>
+        <td>{{ p.valuation_status }}</td>
+        <td>{{ p.alert }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="muted">{{ rows|length }} position(s)</p>
+{% else %}
+<p>No open positions found.</p>
+{% endif %}
+{% endblock %}

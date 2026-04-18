@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Add CDT</h1>
+
+{% if active.mode == 'PROD' %}
+<div class="panel panel-danger">
+  <strong>PROD mode</strong> &mdash; This will write to the production database.
+</div>
+{% endif %}
+
+<div class="panel">
+  <form method="post">
+    <label for="account">Account</label>
+    <input type="text" id="account" name="account" required placeholder="e.g. BBVA">
+
+    <label for="symbol">Symbol (default: BBVA CDT)</label>
+    <input type="text" id="symbol" name="symbol" value="BBVA CDT">
+
+    <label for="open_date">Open Date (YYYY-MM-DD)</label>
+    <input type="text" id="open_date" name="open_date" required placeholder="2024-01-15">
+
+    <label for="maturity_date">Maturity Date (YYYY-MM-DD)</label>
+    <input type="text" id="maturity_date" name="maturity_date" required placeholder="2025-01-15">
+
+    <label for="principal">Principal (COP)</label>
+    <input type="text" id="principal" name="principal" required placeholder="10000000">
+
+    <label for="annual_rate">Annual Rate (decimal, e.g. 0.10 = 10%)</label>
+    <input type="text" id="annual_rate" name="annual_rate" required placeholder="0.10">
+
+    <label for="term_years">Term in Years (optional, dates are source of truth)</label>
+    <input type="text" id="term_years" name="term_years" placeholder="1.0">
+
+    <label for="notes">Notes (optional)</label>
+    <input type="text" id="notes" name="notes">
+
+    <button type="submit">Record CDT</button>
+  </form>
+</div>
+{% endblock %}

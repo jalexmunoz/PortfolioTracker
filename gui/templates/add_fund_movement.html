@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Add Fund Movement</h1>
+
+{% if active.mode == 'PROD' %}
+<div class="panel panel-danger">
+  <strong>PROD mode</strong> &mdash; This will write to the production database.
+</div>
+{% endif %}
+
+<div class="panel">
+  <form method="post">
+    <label for="account">Account</label>
+    <input type="text" id="account" name="account" required placeholder="e.g. Binance">
+
+    <label for="symbol">Symbol</label>
+    <input type="text" id="symbol" name="symbol" required placeholder="e.g. __USD_CASH__">
+
+    <label for="movement_date">Date (YYYY-MM-DD)</label>
+    <input type="text" id="movement_date" name="movement_date" required placeholder="2024-01-15">
+
+    <label for="movement_type">Type</label>
+    <select id="movement_type" name="movement_type" required>
+      <option value="CONTRIBUTION">CONTRIBUTION</option>
+      <option value="WITHDRAWAL">WITHDRAWAL</option>
+    </select>
+
+    <label for="amount">Amount (USD)</label>
+    <input type="text" id="amount" name="amount" required placeholder="1000">
+
+    <label for="notes">Notes (optional)</label>
+    <input type="text" id="notes" name="notes">
+
+    <button type="submit">Record Fund Movement</button>
+  </form>
+</div>
+{% endblock %}

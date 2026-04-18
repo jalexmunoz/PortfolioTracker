@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Summary</h1>
+
+<div class="panel">
+  <form method="get" class="filter-form">
+    <label for="account">Account</label>
+    <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
+    <button type="submit">Filter</button>
+  </form>
+</div>
+
+{% if s.total_cost_basis == 0 and s.total_realized_pnl == 0 and s.cash_balance == 0 %}
+<p>No portfolio data found. Database may be empty.</p>
+{% else %}
+
+<div class="panel">
+  <h2>Portfolio Summary</h2>
+  <table class="kv-table">
+    <tr><td>Total Cost Basis</td><td class="num">{{ format_money(s.total_cost_basis) }}</td></tr>
+    <tr><td>Total Realized PnL</td><td class="num">{{ format_money(s.total_realized_pnl) }}</td></tr>
+    <tr><td>Cash Balance</td><td class="num">{{ format_money(s.cash_balance) }}</td></tr>
+    <tr><td><strong>Total Equity</strong></td><td class="num"><strong>{{ format_money(s.total_equity) }}</strong></td></tr>
+    <tr><td>Market Covered Value</td><td class="num">{{ format_money(s.market_covered_value) }}</td></tr>
+    <tr><td>Non-Market Valued</td><td class="num">{{ format_money(s.non_market_valued) }}</td></tr>
+    <tr><td>Unvalued Excluded Cost Basis</td><td class="num">{{ format_money(s.unvalued_excluded_cost_basis) }}</td></tr>
+    <tr><td>Unrealized PnL</td><td class="num">{{ format_money(s.total_unrealized_pnl) }}</td></tr>
+    <tr><td>Unrealized Return %</td><td class="num">{{ format_money(s.unrealized_return_pct) }}%</td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Price Quality</h2>
+  {% set counts = s.price_quality_counts or {} %}
+  <table class="kv-table">
+    <tr><td>Usable</td><td class="num">{{ counts.get('usable', 0) }}</td></tr>
+    <tr><td>Stale</td><td class="num">{{ counts.get('stale', 0) }}</td></tr>
+    <tr><td>Unavailable</td><td class="num">{{ counts.get('unavailable', 0) }}</td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h2>Asset Class Breakdown</h2>
+  <table>
+    <thead>
+      <tr><th>Asset Class</th><th class="num">Equity</th><th class="num">%</th></tr>
+    </thead>
+    <tbody>
+      {% for row in breakdown_rows %}
+      <tr>
+        <td>{{ row.asset_class }}</td>
+        <td class="num">{{ format_money(row.equity) }}</td>
+        <td class="num">{{ row.pct }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endif %}
+{% endblock %}
