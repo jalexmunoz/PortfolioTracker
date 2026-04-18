@@ -212,17 +212,24 @@ def add_transaction():
             qty = _parse_decimal(request.form.get("qty"), "Qty")
             price = _parse_decimal(request.form.get("price"), "Unit Price")
             fee_raw = request.form.get("fee", "0").strip()
-            fee = Decimal(fee_raw) if fee_raw else Decimal("0")
+            fee_usd = Decimal(fee_raw) if fee_raw else Decimal("0")
             notes = request.form.get("notes", "").strip() or None
 
+            # Validations
             if side not in ("BUY", "SELL"):
                 raise ValueError("Side must be BUY or SELL")
             if not account:
                 raise ValueError("Account is required")
             if not symbol:
                 raise ValueError("Symbol is required")
-
-            tx_date = tx_date_str if tx_date_str else None
+            if qty <= 0:
+                raise ValueError("Qty must be > 0")
+            if price <= 0:
+                raise ValueError("Unit Price must be > 0")
+            if fee_usd < 0:
+                raise ValueError("Fee cannot be negative")
+            if not tx_date_str:
+                raise ValueError("Transaction date is required")
 
             db, resolver, tx_svc, _ = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
@@ -231,14 +238,14 @@ def add_transaction():
                 if side == "BUY":
                     tx_id = tx_svc.record_buy(
                         symbol=symbol, account=account, qty=qty,
-                        unit_price=price, fee=fee,
-                        tx_date=tx_date, notes=notes,
+                        unit_price=price, fee_usd=fee_usd,
+                        tx_date=tx_date_str, notes=notes,
                     )
                 else:
                     tx_id = tx_svc.record_sell(
                         symbol=symbol, account=account, qty=qty,
-                        unit_price=price, fee=fee,
-                        tx_date=tx_date, notes=notes,
+                        unit_price=price, fee_usd=fee_usd,
+                        tx_date=tx_date_str, notes=notes,
                     )
                 flash(f"OK: {side} recorded, tx_id={tx_id}", "success")
             except InvalidTransaction as exc:
