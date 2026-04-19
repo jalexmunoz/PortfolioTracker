@@ -1107,3 +1107,81 @@ def test_cash_behavior_for_cdt_and_fund_movements(transaction_svc, db_connection
     assert pnl_svc.cash_balance('BBVA') == Decimal('-4661.13')
     assert pnl_svc.cash_balance('Trii') == Decimal('-250')
 
+
+def test_record_cash_movement_deposit_and_withdrawal(transaction_svc, db_connection):
+    resolver = AssetResolver(db_connection)
+    pnl_svc = PnLService(db_connection, resolver)
+
+    transaction_svc.record_cash_movement(
+        account='Vanguard',
+        movement_date='2026-04-18',
+        amount=Decimal('25000'),
+        movement_type='DEPOSIT',
+    )
+    assert pnl_svc.cash_balance('Vanguard') == Decimal('25000')
+
+    transaction_svc.record_cash_movement(
+        account='Vanguard',
+        movement_date='2026-04-19',
+        amount=Decimal('1000'),
+        movement_type='WITHDRAWAL',
+    )
+    assert pnl_svc.cash_balance('Vanguard') == Decimal('24000')
+
+    # No realized PnL, no positions created.
+    assert pnl_svc.realized_pnl(account='Vanguard') == Decimal('0')
+    assert all(p['account'] != 'Vanguard' or p['qty_open'] != Decimal('25000') for p in pnl_svc.positions())
+
+
+def test_record_cash_movement_rejects_invalid_inputs(transaction_svc):
+    with pytest.raises(InvalidTransaction):
+        transaction_svc.record_cash_movement(
+            account='Vanguard', movement_date='2026-04-18',
+            amount=Decimal('0'), movement_type='DEPOSIT',
+        )
+    with pytest.raises(InvalidTransaction):
+        transaction_svc.record_cash_movement(
+            account='Vanguard', movement_date='2026-04-18',
+            amount=Decimal('-10'), movement_type='DEPOSIT',
+        )
+    with pytest.raises(InvalidTransaction):
+        transaction_svc.record_cash_movement(
+            account='', movement_date='2026-04-18',
+            amount=Decimal('100'), movement_type='DEPOSIT',
+        )
+    with pytest.raises(InvalidTransaction):
+        transaction_svc.record_cash_movement(
+            account='Vanguard', movement_date='2026-04-18',
+            amount=Decimal('100'), movement_type='TRANSFER',
+        )
+
+
+def test_cash_movement_does_not_double_count_with_legacy_usd_sum(transaction_svc, db_connection):
+    resolver = AssetResolver(db_connection)
+    pnl_svc = PnLService(db_connection, resolver)
+
+    # A legacy __USD_CASH__ transaction (pre-B48 style) must still add up once.
+    cash_asset = resolver.get_or_create_usd_cash()
+    conn = db_connection.connect()
+    cursor = conn.cursor()
+    account_id = transaction_svc._get_or_create_account('Vanguard', cursor)
+    cursor.execute(
+        """
+        INSERT INTO transactions
+        (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (cash_asset['id'], account_id, 'MIGRATION_BUY', 500.0, 1.0, 0.0, 500.0, '2026-01-01', 'legacy seed cash'),
+    )
+    conn.commit()
+    assert pnl_svc.cash_balance('Vanguard') == Decimal('500')
+
+    transaction_svc.record_cash_movement(
+        account='Vanguard',
+        movement_date='2026-04-18',
+        amount=Decimal('100'),
+        movement_type='DEPOSIT',
+    )
+    # Legacy 500 + new cash_ledger 100 = 600. No double counting.
+    assert pnl_svc.cash_balance('Vanguard') == Decimal('600')
+

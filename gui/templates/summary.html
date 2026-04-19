@@ -41,7 +41,22 @@
   <div class="metric-card">
     <span class="label">Realized PnL</span>
     <span class="value small {{ 'value-pos' if s.total_realized_pnl > 0 else ('value-neg' if s.total_realized_pnl < 0 else '') }}">{{ format_money(s.total_realized_pnl) }}</span>
+    <span class="sub">closed lots + CDT interest</span>
   </div>
+  <div class="metric-card">
+    <span class="label">Unrealized PnL</span>
+    <span class="value small {{ 'value-pos' if s.total_unrealized_pnl > 0 else ('value-neg' if s.total_unrealized_pnl < 0 else '') }}">{{ format_money(s.total_unrealized_pnl) }}</span>
+    <span class="sub">{% if s.unrealized_return_pct is not none %}{{ s.unrealized_return_pct }}%{% else %}open positions{% endif %}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Total PnL</span>
+    <span class="value small {{ 'value-pos' if total_pnl > 0 else ('value-neg' if total_pnl < 0 else '') }}">{{ format_money(total_pnl) }}</span>
+    <span class="sub">realized + unrealized</span>
+  </div>
+</div>
+
+<div class="panel">
+  <span class="muted" style="font-size: 0.82rem;">Last price refresh: <strong>{{ last_refresh_display }}</strong></span>
 </div>
 
 <div class="row-2">

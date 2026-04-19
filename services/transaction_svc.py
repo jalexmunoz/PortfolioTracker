@@ -19,6 +19,7 @@ class TransactionService:
     """
     CDT_CONTRACT_NOTE_PREFIX = "CDT_CONTRACT_V1:"
     FUND_MOVEMENT_TYPES = {"CONTRIBUTION", "WITHDRAWAL"}
+    CASH_MOVEMENT_TYPES = {"DEPOSIT", "WITHDRAWAL"}
 
 
     def __init__(self, db: Database, resolver: AssetResolver):
@@ -662,6 +663,78 @@ class TransactionService:
             conn.rollback()
             raise
 
+    def record_cash_movement(
+        self,
+        account: str,
+        movement_date: str,
+        amount: Decimal,
+        movement_type: str,
+        notes: Optional[str] = None,
+    ) -> int:
+        """Record one manual cash DEPOSIT or WITHDRAWAL that only moves cash."""
+        account_name = (account or "").strip()
+        if not account_name:
+            raise InvalidTransaction("account cannot be empty")
+
+        movement_type_normalized = (movement_type or "").strip().upper()
+        if movement_type_normalized not in self.CASH_MOVEMENT_TYPES:
+            raise InvalidTransaction("movement_type must be DEPOSIT or WITHDRAWAL")
+
+        movement_date_iso = self._parse_iso_date(movement_date, "date")
+        try:
+            amount_dec = Decimal(str(amount))
+        except (InvalidOperation, TypeError) as exc:
+            raise InvalidTransaction("amount must be numeric") from exc
+        if amount_dec <= 0:
+            raise InvalidTransaction("amount must be positive")
+
+        movement_note = f"CASH_{movement_type_normalized}"
+        user_note = (notes or "").strip()
+        stored_notes = movement_note if not user_note else f"{movement_note} | {user_note}"
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            cash_asset = self.resolver.get_or_create_usd_cash()
+            account_id = self._get_or_create_account(account_name, cursor)
+
+            # total_usd=0 on the transaction row: the cash delta lives in cash_ledger
+            # so cash_balance() does not double-count via the legacy __USD_CASH__ sum.
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cash_asset["id"],
+                    account_id,
+                    movement_type_normalized,
+                    float(amount_dec),
+                    1.0,
+                    0.0,
+                    0.0,
+                    movement_date_iso,
+                    stored_notes,
+                ),
+            )
+            tx_id = cursor.lastrowid
+
+            cash_delta = amount_dec if movement_type_normalized == "DEPOSIT" else -amount_dec
+            self._record_cash_movement(
+                cursor,
+                tx_id=tx_id,
+                account_id=account_id,
+                movement_type=f"CASH_{movement_type_normalized}",
+                amount_usd=cash_delta,
+                note="Manual cash movement",
+            )
+            conn.commit()
+            return tx_id
+        except Exception:
+            conn.rollback()
+            raise
+
     def list_transactions(
         self,
         account: Optional[str] = None,
@@ -949,6 +1022,12 @@ class TransactionService:
             if tx_type == "SELL":
                 cursor.execute("DELETE FROM cash_ledger WHERE tx_id = ?", (tx_id,))
                 cursor.execute("DELETE FROM lot_matches WHERE sell_tx_id = ?", (tx_id,))
+                cursor.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+                conn.commit()
+                return {"id": tx_id, "tx_type": tx_type}
+
+            if tx_type in ("DEPOSIT", "WITHDRAWAL"):
+                cursor.execute("DELETE FROM cash_ledger WHERE tx_id = ?", (tx_id,))
                 cursor.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
                 conn.commit()
                 return {"id": tx_id, "tx_type": tx_type}

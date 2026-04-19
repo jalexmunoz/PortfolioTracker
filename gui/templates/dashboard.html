@@ -55,20 +55,28 @@
 
   <div class="cards-grid">
     <div class="metric-card">
+      <span class="label">Unrealized PnL</span>
+      <span class="value small {{ 'value-pos' if summary.total_unrealized_pnl > 0 else ('value-neg' if summary.total_unrealized_pnl < 0 else '') }}">{{ format_money(summary.total_unrealized_pnl) }}</span>
+      <span class="sub">{% if summary.unrealized_return_pct is not none %}{{ summary.unrealized_return_pct }}% return{% else %}open positions{% endif %}</span>
+    </div>
+    <div class="metric-card">
+      <span class="label">Total PnL</span>
+      <span class="value small {{ 'value-pos' if total_pnl > 0 else ('value-neg' if total_pnl < 0 else '') }}">{{ format_money(total_pnl) }}</span>
+      <span class="sub">realized + unrealized</span>
+    </div>
+    <div class="metric-card">
       <span class="label">Non-Market Valued</span>
       <span class="value small">{{ format_money(summary.non_market_valued) }}</span>
       <span class="sub">CDT, fund balances</span>
-    </div>
-    <div class="metric-card">
-      <span class="label">Unrealized PnL</span>
-      <span class="value small {{ 'value-pos' if summary.total_unrealized_pnl > 0 else ('value-neg' if summary.total_unrealized_pnl < 0 else '') }}">{{ format_money(summary.total_unrealized_pnl) }}</span>
-      <span class="sub">{% if summary.unrealized_return_pct is not none %}{{ summary.unrealized_return_pct }}% return{% else %}return n/a{% endif %}</span>
     </div>
     <div class="metric-card">
       <span class="label">Open Positions</span>
       <span class="value small">{{ positions_count }}</span>
       <span class="sub">{{ tx_count }} ledger entries</span>
     </div>
+  </div>
+
+  <div class="cards-grid">
     <div class="metric-card">
       <span class="label">Price Quality</span>
       <span class="value small">
@@ -78,13 +86,23 @@
       </span>
       <span class="sub">usable / stale / unavailable</span>
     </div>
+    <div class="metric-card">
+      <span class="label">Last Price Refresh</span>
+      <span class="value small">{{ last_refresh_display }}</span>
+      <span class="sub">from newest asset price</span>
+    </div>
   </div>
 
   {# ---- Quick actions ---- #}
   <div class="panel">
     <div class="panel-title">Quick Actions</div>
     <div class="quick-actions">
-      <a href="{{ url_for('gui.add_transaction') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn qa-primary">+ BUY / SELL</a>
+      <form method="post" action="{{ url_for('gui.refresh_prices_route') }}" style="display:inline;">
+        <input type="hidden" name="next_url" value="{{ url_for('gui.dashboard') }}">
+        <button type="submit" class="qa-btn qa-primary">Refresh Prices</button>
+      </form>
+      <a href="{{ url_for('gui.add_transaction') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ BUY / SELL</a>
+      <a href="{{ url_for('gui.add_cash_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Cash Deposit/Withdrawal</a>
       <a href="{{ url_for('gui.add_cdt') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ CDT</a>
       <a href="{{ url_for('gui.add_fund_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Fund Movement</a>
       <a href="{{ url_for('gui.import_legacy') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">Import Legacy</a>

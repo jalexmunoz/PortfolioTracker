@@ -17,8 +17,17 @@
 {% else %}
 
 <div class="panel">
-  <div class="panel-title">Reports</div>
-  <p class="muted">Snapshot of summary, allocation and price quality. For the full operational view use the Daily Report.</p>
+  <div class="panel-title-row">
+    <span class="panel-title">Reports</span>
+    <div class="actions-inline">
+      <span class="muted" style="font-size: 0.82rem;">Last price refresh: {{ last_refresh_display }}</span>
+      <form method="post" action="{{ url_for('gui.refresh_prices_route') }}" style="display:inline;">
+        <input type="hidden" name="next_url" value="{{ url_for('gui.reports') }}">
+        <button type="submit" class="qa-btn qa-primary">Refresh Prices</button>
+      </form>
+    </div>
+  </div>
+  <p class="muted" style="margin-top: 0.4rem;">Snapshot of summary, allocation and price quality. For the full operational view use the Daily Report.</p>
 </div>
 
 <div class="cards-grid">
@@ -33,11 +42,17 @@
   <div class="metric-card">
     <span class="label">Realized PnL</span>
     <span class="value small {{ 'value-pos' if s.total_realized_pnl > 0 else ('value-neg' if s.total_realized_pnl < 0 else '') }}">{{ format_money(s.total_realized_pnl) }}</span>
+    <span class="sub">closed lots + CDT interest</span>
   </div>
   <div class="metric-card">
     <span class="label">Unrealized PnL</span>
     <span class="value small {{ 'value-pos' if s.total_unrealized_pnl > 0 else ('value-neg' if s.total_unrealized_pnl < 0 else '') }}">{{ format_money(s.total_unrealized_pnl) }}</span>
-    <span class="sub">{% if s.unrealized_return_pct is not none %}{{ s.unrealized_return_pct }}%{% endif %}</span>
+    <span class="sub">{% if s.unrealized_return_pct is not none %}{{ s.unrealized_return_pct }}%{% else %}open positions{% endif %}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Total PnL</span>
+    <span class="value small {{ 'value-pos' if total_pnl > 0 else ('value-neg' if total_pnl < 0 else '') }}">{{ format_money(total_pnl) }}</span>
+    <span class="sub">realized + unrealized</span>
   </div>
 </div>
 

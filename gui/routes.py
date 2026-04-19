@@ -69,6 +69,30 @@ def _redirect_after_write(default_endpoint: str):
     return redirect(url_for(default_endpoint))
 
 
+def _get_last_price_refresh(db) -> str | None:
+    """Return the most recent price_updated_at timestamp across all assets, or None."""
+    cursor = db.connect().cursor()
+    cursor.execute("SELECT MAX(price_updated_at) FROM assets WHERE price_updated_at IS NOT NULL")
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
+def _format_last_refresh(ts) -> str:
+    if not ts:
+        return "No refresh yet"
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return str(ts)
+
+
+def _compute_total_pnl(summary: dict) -> Decimal:
+    realized = Decimal(str(summary.get("total_realized_pnl", 0) or 0))
+    unrealized = Decimal(str(summary.get("total_unrealized_pnl", 0) or 0))
+    return realized + unrealized
+
+
 def _build_breakdown_rows(s):
     breakdown = s.get("asset_class_breakdown", {}) or {}
     total_equity = Decimal(str(s.get("total_equity", 0)))
@@ -100,6 +124,8 @@ def dashboard():
     counts = {}
     warnings = []
     load_error = None
+    last_refresh_display = "No refresh yet"
+    total_pnl = Decimal("0")
 
     try:
         db, _, tx_svc, pnl_svc = _get_db_and_services(active)
@@ -107,6 +133,7 @@ def dashboard():
             positions_list = pnl_svc.positions()
             summary = pnl_svc.summary()
             tx_count = len(tx_svc.list_transactions(limit=10000))
+            last_refresh_display = _format_last_refresh(_get_last_price_refresh(db))
         finally:
             db.close()
 
@@ -121,15 +148,13 @@ def dashboard():
         stale = int(counts.get("stale", 0) or 0)
         unavailable = int(counts.get("unavailable", 0) or 0)
         unvalued = int(summary.get("unvalued_positions", 0) or 0)
-        cash = Decimal(str(summary.get("cash_balance", 0)))
+        total_pnl = _compute_total_pnl(summary)
         if stale:
             warnings.append(f"{stale} position(s) have stale prices.")
         if unavailable:
             warnings.append(f"{unavailable} position(s) have unavailable prices.")
         if unvalued:
             warnings.append(f"{unvalued} position(s) have no approved valuation and are excluded from total equity.")
-        if cash < 0:
-            warnings.append(f"Cash balance is negative: {_format_money(cash)}.")
     except Exception as exc:
         load_error = str(exc)
         tx_count = 0
@@ -146,6 +171,8 @@ def dashboard():
         counts=counts,
         warnings=warnings,
         load_error=load_error,
+        last_refresh_display=last_refresh_display,
+        total_pnl=total_pnl,
         format_money=_format_money,
         format_qty=_format_qty,
     )
@@ -193,10 +220,12 @@ def reports():
         try:
             positions_list = pnl_svc.positions()
             s = pnl_svc.summary()
+            last_refresh_display = _format_last_refresh(_get_last_price_refresh(db))
         finally:
             db.close()
         breakdown_rows = _build_breakdown_rows(s)
         counts = s.get("price_quality_counts", {}) or {}
+        total_pnl = _compute_total_pnl(s)
     except Exception as exc:
         return render_template(
             "reports.html",
@@ -213,6 +242,8 @@ def reports():
         positions=positions_list,
         breakdown_rows=breakdown_rows,
         counts=counts,
+        last_refresh_display=last_refresh_display,
+        total_pnl=total_pnl,
         format_money=_format_money,
         format_qty=_format_qty,
     )
@@ -504,6 +535,96 @@ def add_cdt():
     )
 
 
+@bp.route("/add-cash-movement", methods=["GET", "POST"])
+def add_cash_movement():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        try:
+            account = request.form.get("account", "").strip()
+            movement_date = request.form.get("movement_date", "").strip()
+            movement_type = request.form.get("movement_type", "").strip().upper()
+            amount = _parse_decimal(request.form.get("amount"), "Amount")
+            notes = request.form.get("notes", "").strip() or None
+
+            if not account:
+                raise ValueError("Account is required")
+            if not movement_date:
+                raise ValueError("Date is required")
+            if movement_type not in ("DEPOSIT", "WITHDRAWAL"):
+                raise ValueError("Movement type must be DEPOSIT or WITHDRAWAL")
+            if amount <= 0:
+                raise ValueError("Amount must be > 0")
+
+            db, resolver, tx_svc, _ = _get_db_and_services(active)
+            from portfolio_tracker_v2.core.exceptions import InvalidTransaction
+
+            try:
+                tx_id = tx_svc.record_cash_movement(
+                    account=account,
+                    movement_date=movement_date,
+                    amount=amount,
+                    movement_type=movement_type,
+                    notes=notes,
+                )
+                flash(
+                    f"OK: {movement_type} recorded, tx_id={tx_id}, "
+                    f"amount={_format_money(amount)}",
+                    "success",
+                )
+            except InvalidTransaction as exc:
+                flash(f"Cash movement error: {exc}", "error")
+            finally:
+                db.close()
+
+        except ValueError as exc:
+            flash(str(exc), "error")
+
+        return _redirect_after_write("gui.add_cash_movement")
+
+    return render_template(
+        "add_cash_movement.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
+    )
+
+
+@bp.post("/refresh-prices")
+def refresh_prices_route():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    try:
+        from portfolio_tracker_v2.services.price_svc import refresh_prices
+
+        db = None
+        try:
+            from portfolio_tracker_v2.core import Database
+
+            db = Database(active.db_path)
+            report = refresh_prices(db)
+        finally:
+            if db is not None:
+                db.close()
+
+        flash(
+            "Prices refreshed: "
+            f"{report.updated} updated, "
+            f"{report.skipped_unsupported} skipped unsupported, "
+            f"{report.skipped_unmapped} skipped unmapped, "
+            f"{report.failed_final} failed final.",
+            "success" if report.failed_final == 0 else "warning",
+        )
+    except Exception as exc:
+        flash(f"Refresh failed: {exc}", "error")
+
+    return _redirect_after_write("gui.dashboard")
+
+
 @bp.route("/add-fund-movement", methods=["GET", "POST"])
 def add_fund_movement():
     active = _require_active_db()
@@ -649,10 +770,12 @@ def summary():
     db, resolver, _, pnl_svc = _get_db_and_services(active)
     try:
         s = pnl_svc.summary(account)
+        last_refresh_display = _format_last_refresh(_get_last_price_refresh(db))
     finally:
         db.close()
 
     breakdown_rows = _build_breakdown_rows(s)
+    total_pnl = _compute_total_pnl(s)
 
     return render_template(
         "summary.html",
@@ -661,6 +784,8 @@ def summary():
         s=s,
         breakdown_rows=breakdown_rows,
         filters={"account": account or ""},
+        last_refresh_display=last_refresh_display,
+        total_pnl=total_pnl,
         format_money=_format_money,
     )
 

@@ -1002,6 +1002,51 @@ def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount,
 
 
 
+@main.command("add-cash-movement")
+@click.option("--account", required=True)
+@click.option("--date", "movement_date", required=True, type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--movement-type", required=True, type=click.Choice(["DEPOSIT", "WITHDRAWAL"], case_sensitive=False))
+@click.option("--amount", required=True, callback=parse_decimal)
+@click.option("--notes", default=None)
+def cli_add_cash_movement(account, movement_date, movement_type, amount, notes):
+    """Record one manual cash deposit or withdrawal (no position, no PnL)."""
+    account_normalized = (account or "").strip()
+    if not account_normalized:
+        raise click.BadParameter("account cannot be empty", param_hint="account")
+
+    if amount <= 0:
+        raise click.BadParameter("amount must be > 0", param_hint="amount")
+
+    movement_date_iso = movement_date.date().isoformat()
+    movement_type_normalized = movement_type.strip().upper()
+
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+
+    try:
+        tx_id = svc.record_cash_movement(
+            account=account_normalized,
+            movement_date=movement_date_iso,
+            amount=amount,
+            movement_type=movement_type_normalized,
+            notes=notes,
+        )
+        click.echo(
+            "OK: "
+            f"CASH movement recorded id={tx_id} "
+            f"account={account_normalized} "
+            f"date={movement_date_iso} "
+            f"type={movement_type_normalized} "
+            f"amount={format_money(amount)}"
+        )
+    except InvalidTransaction as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+    finally:
+        db.close()
+
+
 @main.command("backfill-cash-ledger")
 def cli_backfill_cash_ledger():
     """Backfill historical cash_ledger rows from existing transactions."""
