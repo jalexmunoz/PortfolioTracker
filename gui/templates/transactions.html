@@ -1,72 +1,98 @@
 {% extends "base.html" %}
 
+{% block page_title %}Ledger{% endblock %}
+
 {% block content %}
-<h1>Transactions</h1>
 
 <div class="panel">
   <form method="get" class="filter-form">
-    <label for="account">Account</label>
-    <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
-
-    <label for="symbol">Symbol</label>
-    <input type="text" id="symbol" name="symbol" value="{{ filters.symbol }}" placeholder="(all)">
-
-    <label for="side">Side</label>
-    <select id="side" name="side">
-      <option value="">All</option>
-      <option value="BUY" {{ 'selected' if filters.side == 'BUY' }}>BUY</option>
-      <option value="SELL" {{ 'selected' if filters.side == 'SELL' }}>SELL</option>
-      <option value="MIGRATION_BUY" {{ 'selected' if filters.side == 'MIGRATION_BUY' }}>MIGRATION_BUY</option>
-    </select>
-
-    <label for="limit">Limit</label>
-    <input type="text" id="limit" name="limit" value="{{ filters.limit }}" style="width:80px">
-
+    <div>
+      <label for="account">Account</label>
+      <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
+    </div>
+    <div>
+      <label for="symbol">Symbol</label>
+      <input type="text" id="symbol" name="symbol" value="{{ filters.symbol }}" placeholder="(all)">
+    </div>
+    <div>
+      <label for="side">Side</label>
+      <select id="side" name="side">
+        <option value="">All</option>
+        <option value="BUY" {{ 'selected' if filters.side == 'BUY' }}>BUY</option>
+        <option value="SELL" {{ 'selected' if filters.side == 'SELL' }}>SELL</option>
+        <option value="MIGRATION_BUY" {{ 'selected' if filters.side == 'MIGRATION_BUY' }}>MIGRATION_BUY</option>
+      </select>
+    </div>
+    <div>
+      <label for="limit">Limit</label>
+      <input type="text" id="limit" name="limit" value="{{ filters.limit }}" style="width:90px">
+    </div>
     <button type="submit">Filter</button>
+    {% if filters.account or filters.symbol or filters.side %}
+      <a href="{{ url_for('gui.transactions') }}" class="btn btn-secondary">Clear</a>
+    {% endif %}
   </form>
 </div>
 
-{% if rows %}
-<div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>ID</th>
-        <th>Date</th>
-        <th>Account</th>
-        <th>Symbol</th>
-        <th>Side</th>
-        <th class="num">Qty</th>
-        <th class="num">Price</th>
-        <th class="num">Fee</th>
-        <th class="num">Total</th>
-        <th class="num">Proceeds</th>
-        <th class="num">Cost Basis</th>
-        <th class="num">Realized PnL</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for tx in rows %}
-      <tr>
-        <td>{{ tx.id }}</td>
-        <td>{{ tx.tx_date }}</td>
-        <td>{{ tx.account }}</td>
-        <td>{{ tx.symbol }}</td>
-        <td>{{ tx.side }}</td>
-        <td class="num">{{ format_qty(tx.quantity) }}</td>
-        <td class="num">{{ format_money(tx.unit_price) }}</td>
-        <td class="num">{{ format_money(tx.fee_usd) }}</td>
-        <td class="num">{{ format_money(tx.total_usd) }}</td>
-        <td class="num">{{ format_money(tx.gross_proceeds) if tx.gross_proceeds is not none else '' }}</td>
-        <td class="num">{{ format_money(tx.matched_cost_basis) if tx.matched_cost_basis is not none else '' }}</td>
-        <td class="num">{{ format_money(tx.realized_pnl) if tx.realized_pnl is not none else '' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+<div class="panel">
+  <div class="panel-title-row">
+    <span class="panel-title">Transactions</span>
+    <span class="muted">{{ rows|length }} row(s) (limit {{ filters.limit }})</span>
+  </div>
+
+  {% if rows %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Date</th>
+          <th>Account</th>
+          <th>Symbol</th>
+          <th>Side</th>
+          <th class="num">Qty</th>
+          <th class="num">Price</th>
+          <th class="num">Fee</th>
+          <th class="num">Total</th>
+          <th class="num">Proceeds</th>
+          <th class="num">Cost Basis</th>
+          <th class="num">Realized PnL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tx in rows %}
+        <tr>
+          <td>{{ tx.id }}</td>
+          <td>{{ tx.tx_date }}</td>
+          <td>{{ tx.account }}</td>
+          <td><strong>{{ tx.symbol }}</strong></td>
+          <td>
+            {% set side_lower = (tx.side or '')|lower %}
+            {% if tx.side == 'BUY' %}<span class="pill pill-buy">BUY</span>
+            {% elif tx.side == 'SELL' %}<span class="pill pill-sell">SELL</span>
+            {% elif 'MIGRATION' in (tx.side or '') %}<span class="pill pill-mig">{{ tx.side }}</span>
+            {% elif 'CDT' in (tx.side or '') %}<span class="pill pill-cdt">{{ tx.side }}</span>
+            {% else %}<span class="pill pill-fund">{{ tx.side }}</span>{% endif %}
+          </td>
+          <td class="num">{{ format_qty(tx.quantity) }}</td>
+          <td class="num">{{ format_money(tx.unit_price) }}</td>
+          <td class="num">{{ format_money(tx.fee_usd) }}</td>
+          <td class="num">{{ format_money(tx.total_usd) }}</td>
+          <td class="num">{{ format_money(tx.gross_proceeds) if tx.gross_proceeds is not none else '' }}</td>
+          <td class="num">{{ format_money(tx.matched_cost_basis) if tx.matched_cost_basis is not none else '' }}</td>
+          <td class="num">
+            {% if tx.realized_pnl is not none %}
+              <span class="{{ 'value-pos' if tx.realized_pnl > 0 else ('value-neg' if tx.realized_pnl < 0 else '') }}">{{ format_money(tx.realized_pnl) }}</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No transactions found for the given filters.</p>
+  {% endif %}
 </div>
-<p class="muted">{{ rows|length }} row(s) shown (limit {{ filters.limit }})</p>
-{% else %}
-<p>No transactions found for the given filters.</p>
-{% endif %}
+
 {% endblock %}

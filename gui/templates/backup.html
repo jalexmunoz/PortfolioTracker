@@ -1,20 +1,28 @@
 {% extends "base.html" %}
 
-{% block content %}
-<h1>Manual DB Backup</h1>
-<p>Create a timestamped copy of the active DB.</p>
-<p>Backup directory: <code>{{ backup_root }}</code></p>
+{% block page_title %}Manual Backup{% endblock %}
 
-{% if gui_active_db %}
-  <form method="post" class="panel">
+{% block content %}
+
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">Manual DB Backup</div>
+  <p>Create a timestamped copy of the active DB.</p>
+  <p>Backup directory: <code>{{ backup_root }}</code></p>
+
+  {% if gui_active_db %}
     <p>Active DB: <code>{{ gui_active_db.db_path }}</code></p>
     <p>Mode: <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span></p>
-    <button type="submit">Create backup</button>
-  </form>
-{% else %}
-  <div class="panel panel-danger">
-    <p>No active DB selected. Backup cannot run.</p>
-    <p>Go to <a href="{{ url_for('gui.db_context') }}">Change DB</a> first.</p>
-  </div>
-{% endif %}
+    <form method="post">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+      <button type="submit">Create Backup</button>
+      <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary">Back to Setup</a>
+    </form>
+  {% else %}
+    <div class="banner banner-warn">
+      <strong>No active DB</strong>
+      <span>Backup cannot run. Go to <a href="{{ url_for('gui.setup') }}">Setup</a> first.</span>
+    </div>
+  {% endif %}
+</div>
+
 {% endblock %}

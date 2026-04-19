@@ -3,47 +3,78 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ config.GUI_APP_NAME }}</title>
+    <title>{% block title %}{{ config.GUI_APP_NAME }}{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='gui.css') }}">
   </head>
   <body>
-    <header class="topbar">
-      <div class="topbar-main">
-        <strong class="app-name">PortfolioTracker GUI v0.2 (H2)</strong>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-title">PortfolioTracker</span>
+          <span class="brand-sub">GUI v0.3 (H3)</span>
+        </div>
+
+        <div class="sidebar-section">Workspace</div>
         <nav>
-          <a href="{{ url_for('gui.home') }}">Home</a>
-          <a href="{{ url_for('gui.db_context') }}">DB</a>
-          <a href="{{ url_for('gui.backup') }}">Backup</a>
-          <a href="{{ url_for('gui.transactions') }}">Transactions</a>
-          <a href="{{ url_for('gui.positions') }}">Positions</a>
-          <a href="{{ url_for('gui.summary') }}">Summary</a>
-          <a href="{{ url_for('gui.daily_report') }}">Daily Report</a>
+          <a href="{{ url_for('gui.dashboard') }}" class="{{ 'active' if active_section == 'dashboard' else '' }}">Dashboard</a>
+          <a href="{{ url_for('gui.portfolio') }}" class="{{ 'active' if active_section == 'portfolio' else '' }}">Portfolio</a>
+          <a href="{{ url_for('gui.transactions') }}" class="{{ 'active' if active_section == 'ledger' else '' }}">Ledger</a>
         </nav>
+
+        <div class="sidebar-section">Actions</div>
+        <nav>
+          <a href="{{ url_for('gui.operations') }}" class="{{ 'active' if active_section == 'operations' else '' }}">Operations</a>
+          <a href="{{ url_for('gui.reports') }}" class="{{ 'active' if active_section == 'reports' else '' }}">Reports</a>
+          <a href="{{ url_for('gui.setup') }}" class="{{ 'active' if active_section == 'setup' else '' }}">Setup</a>
+        </nav>
+
+        <div class="sidebar-footer">
+          {% if gui_active_db %}
+            <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span>
+            <div style="margin-top: 0.4rem; word-break: break-all;">{{ gui_active_db.db_path.split('\\')[-1].split('/')[-1] }}</div>
+          {% else %}
+            <span class="badge badge-none">NO DB</span>
+            <div style="margin-top: 0.4rem;">No DB selected</div>
+          {% endif %}
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="topbar">
+          <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+          <div class="spacer"></div>
+          <div class="context-box">
+            {% if gui_active_db %}
+              <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span>
+              <span class="context-label">DB:</span>
+              <code class="db-path" title="{{ gui_active_db.db_path }}">{{ gui_active_db.db_path }}</code>
+            {% else %}
+              <span class="badge badge-none">NO DB</span>
+              <span class="context-label">No active DB selected</span>
+              <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary" style="padding: 0.3rem 0.7rem; font-size: 0.8rem;">Configure</a>
+            {% endif %}
+          </div>
+        </header>
+
+        <main class="content">
+          {% if gui_active_db and gui_active_db.mode == 'PROD' and prod_warning|default(true) %}
+            <div class="banner banner-prod">
+              <strong>PROD MODE</strong>
+              <span>You are connected to the production database. Writes are real. Take a backup before destructive operations.</span>
+            </div>
+          {% endif %}
+
+          {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+              {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+              {% endfor %}
+            {% endif %}
+          {% endwith %}
+
+          {% block content %}{% endblock %}
+        </main>
       </div>
-
-      <div class="context-box">
-        {% if gui_active_db %}
-          <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span>
-          <span class="context-label">Active DB:</span>
-          <code class="db-path">{{ gui_active_db.db_path }}</code>
-        {% else %}
-          <span class="badge badge-none">NO DB</span>
-          <span class="context-label">Active DB:</span>
-          <code class="db-path">(not configured)</code>
-        {% endif %}
-      </div>
-    </header>
-
-    <main class="container">
-      {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-          {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
-          {% endfor %}
-        {% endif %}
-      {% endwith %}
-
-      {% block content %}{% endblock %}
-    </main>
+    </div>
   </body>
 </html>

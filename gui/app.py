@@ -5,11 +5,11 @@ from .db_context import load_active_db
 from .routes import bp
 
 
-def create_app(test_config=None):
-    app = Flask(__name__, instance_relative_config=True)
+def create_app(test_config=None, instance_path=None):
+    app = Flask(__name__, instance_relative_config=True, instance_path=instance_path)
     app.config.from_mapping(
         SECRET_KEY=os.environ.get("PORTFOLIO_GUI_SECRET_KEY", "portfolio-gui-h1-local"),
-        GUI_APP_NAME="PortfolioTracker GUI v0.1",
+        GUI_APP_NAME="PortfolioTracker GUI v0.3 (H3)",
     )
 
     if test_config:

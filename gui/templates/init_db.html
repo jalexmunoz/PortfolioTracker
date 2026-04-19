@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 
+{% block page_title %}Initialize Database{% endblock %}
+
 {% block content %}
-<h1>Init DB</h1>
 
-{% if active.mode == 'PROD' %}
-<div class="panel panel-danger">
-  <strong>PROD mode</strong> &mdash; This will initialize the production database.
-</div>
-{% endif %}
-
-<div class="panel">
-  <p>Initialize schema and default assets on: <code>{{ active.db_path }}</code></p>
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">Initialize Schema</div>
+  <p>Initialize schema and default assets on:</p>
+  <p><code>{{ active.db_path }}</code></p>
   <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
     <button type="submit">Initialize Database</button>
+    <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary">Back to Setup</a>
   </form>
 </div>
+
 {% endblock %}

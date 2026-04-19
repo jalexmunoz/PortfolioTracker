@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block page_title %}Setup{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel-title">Setup</div>
+  <p class="muted">Choose the active database, initialize schema, seed legacy positions and create manual backups.</p>
+</div>
+
+<div class="hub-grid">
+
+  {# ---- DB Context ---- #}
+  <div class="hub-tile">
+    <h3>Active Database</h3>
+    {% if active %}
+      <p>Mode: <span class="badge badge-{{ active.mode|lower }}">{{ active.mode }}</span></p>
+      <p style="margin: 0;">Path: <code>{{ active.db_path }}</code></p>
+    {% else %}
+      <p>No database selected. Pick TEST or PROD before doing anything else.</p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('gui.db_context') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+
+      <label for="db_path">DB path</label>
+      <input id="db_path" name="db_path" type="text" required
+             placeholder="C:\imp\portfolio_tracker_v2\portfolio.db"
+             value="{{ active.db_path if active else '' }}">
+
+      <fieldset>
+        <legend>Mode</legend>
+        <label class="radio-label"><input type="radio" name="mode" value="TEST" {% if active and active.mode == 'TEST' %}checked{% endif %} required> TEST</label>
+        <label class="radio-label"><input type="radio" name="mode" value="PROD" {% if active and active.mode == 'PROD' %}checked{% endif %} required> PROD</label>
+      </fieldset>
+
+      <button type="submit">Save active DB</button>
+    </form>
+
+    {% if active %}
+    <form method="post" action="{{ url_for('gui.db_context_clear') }}" style="margin-top: 0.6rem;">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+      <button type="submit" class="btn-danger">Clear active DB</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {# ---- Init DB ---- #}
+  <div class="hub-tile">
+    <h3>Initialize Schema</h3>
+    <p>Create tables and default assets on the active database. Safe to re-run; existing tables are not dropped.</p>
+    {% if active %}
+      <p style="margin: 0;">Target: <code>{{ active.db_path }}</code></p>
+      <form method="post" action="{{ url_for('gui.init_db') }}">
+        <input type="hidden" name="next_url" value="{{ next_url }}">
+        <button type="submit" class="btn-secondary">Initialize Database</button>
+      </form>
+    {% else %}
+      <p class="muted">Select a database first.</p>
+      <button type="button" class="btn-secondary" disabled>Initialize Database</button>
+    {% endif %}
+  </div>
+
+  {# ---- Import Legacy ---- #}
+  <div class="hub-tile">
+    <h3>Import Legacy Positions</h3>
+    <p>Seed open positions from a CSV file on the server filesystem. Use Dry Run first.</p>
+
+    {% if active %}
+    <form method="post" action="{{ url_for('gui.import_legacy') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+
+      <label for="csv_path">CSV Path</label>
+      <input type="text" id="csv_path" name="csv_path" placeholder="C:\path\to\legacy_positions.csv" required>
+
+      <label for="seed_date">Seed Date (YYYY-MM-DD)</label>
+      <input type="text" id="seed_date" name="seed_date" placeholder="2026-01-01" required>
+
+      <fieldset>
+        <legend>Mode</legend>
+        <label class="radio-label"><input type="radio" name="dry_run" value="1" checked> Dry Run</label>
+        <label class="radio-label"><input type="radio" name="dry_run" value="0"> Execute</label>
+      </fieldset>
+
+      <button type="submit" class="btn-secondary">Import</button>
+    </form>
+    {% else %}
+      <p class="muted">Select a database first.</p>
+    {% endif %}
+  </div>
+
+  {# ---- Backup ---- #}
+  <div class="hub-tile">
+    <h3>Manual Backup</h3>
+    <p>Create a timestamped copy of the active DB.</p>
+    <p style="margin: 0;">Backup directory: <code>{{ backup_root }}</code></p>
+    {% if active %}
+    <form method="post" action="{{ url_for('gui.backup') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+      <button type="submit">Create Backup</button>
+    </form>
+    {% else %}
+    <p class="muted">Select a database first.</p>
+    {% endif %}
+  </div>
+
+</div>
+
+<div class="panel panel-muted">
+  <div class="panel-title">Not available in GUI yet</div>
+  <p class="muted" style="margin: 0;">Backup restore, schema migrations and cash ledger backfill remain CLI-only.</p>
+</div>
+
+{% endblock %}

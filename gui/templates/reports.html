@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+
+{% block page_title %}Reports{% endblock %}
+
+{% block content %}
+
+{% if active is none %}
+  <div class="banner banner-warn">
+    <strong>No active DB</strong>
+    <span>Select a database from <a href="{{ url_for('gui.setup') }}">Setup</a> to see reports.</span>
+  </div>
+{% elif load_error %}
+  <div class="banner banner-warn">
+    <strong>Could not load report data</strong>
+    <span>{{ load_error }}</span>
+  </div>
+{% else %}
+
+<div class="panel">
+  <div class="panel-title">Reports</div>
+  <p class="muted">Snapshot of summary, allocation and price quality. For the full operational view use the Daily Report.</p>
+</div>
+
+<div class="cards-grid">
+  <div class="metric-card">
+    <span class="label">Total Equity</span>
+    <span class="value">{{ format_money(s.total_equity) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Cost Basis</span>
+    <span class="value small">{{ format_money(s.total_cost_basis) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Realized PnL</span>
+    <span class="value small {{ 'value-pos' if s.total_realized_pnl > 0 else ('value-neg' if s.total_realized_pnl < 0 else '') }}">{{ format_money(s.total_realized_pnl) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Unrealized PnL</span>
+    <span class="value small {{ 'value-pos' if s.total_unrealized_pnl > 0 else ('value-neg' if s.total_unrealized_pnl < 0 else '') }}">{{ format_money(s.total_unrealized_pnl) }}</span>
+    <span class="sub">{% if s.unrealized_return_pct is not none %}{{ s.unrealized_return_pct }}%{% endif %}</span>
+  </div>
+</div>
+
+<div class="row-2">
+  <div class="panel">
+    <div class="panel-title">Asset Allocation</div>
+    {% if s.total_equity and s.total_equity > 0 %}
+      <div class="bar-chart">
+        {% for r in breakdown_rows %}
+          <div class="bar-row">
+            <span class="bar-label">{{ r.asset_class }}</span>
+            <div class="bar-track"><div class="bar-fill cls-{{ r.asset_class }}" style="width: {{ r.pct }}%;"></div></div>
+            <span class="bar-pct">{{ r.pct }}%</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No equity to allocate yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Price Quality</div>
+    {% set total_pq = (counts.get('usable', 0) + counts.get('stale', 0) + counts.get('unavailable', 0)) %}
+    {% if total_pq > 0 %}
+      <div class="bar-chart">
+        {% for q in ['usable', 'stale', 'unavailable'] %}
+          {% set v = counts.get(q, 0) %}
+          {% set pct = (v * 100 / total_pq) | round(1) %}
+          <div class="bar-row">
+            <span class="bar-label">{{ q.title() }}</span>
+            <div class="bar-track"><div class="bar-fill q-{{ q }}" style="width: {{ pct }}%;"></div></div>
+            <span class="bar-pct">{{ v }}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No market-priced positions yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="hub-grid">
+  <div class="hub-tile">
+    <h3>Portfolio Summary</h3>
+    <p>Cost basis, realized/unrealized PnL, allocation breakdown.</p>
+    <div class="hub-actions">
+      <a href="{{ url_for('gui.summary') }}" class="qa-btn qa-primary">Open Summary</a>
+    </div>
+  </div>
+  <div class="hub-tile">
+    <h3>Daily Operational Report</h3>
+    <p>Full snapshot with positions table, warnings and price quality counts.</p>
+    <div class="hub-actions">
+      <a href="{{ url_for('gui.daily_report') }}" class="qa-btn qa-primary">Open Daily Report</a>
+    </div>
+  </div>
+  <div class="hub-tile">
+    <h3>Positions Snapshot</h3>
+    <p>All open positions with valuation status and alerts.</p>
+    <div class="hub-actions">
+      <a href="{{ url_for('gui.portfolio') }}" class="qa-btn qa-primary">Open Portfolio</a>
+    </div>
+  </div>
+  <div class="hub-tile">
+    <h3>Ledger</h3>
+    <p>Read-only transaction ledger with filters by account, symbol, side.</p>
+    <div class="hub-actions">
+      <a href="{{ url_for('gui.transactions') }}" class="qa-btn qa-primary">Open Ledger</a>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+
+{% endblock %}

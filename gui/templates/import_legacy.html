@@ -1,33 +1,31 @@
 {% extends "base.html" %}
 
+{% block page_title %}Import Legacy Positions{% endblock %}
+
 {% block content %}
-<h1>Import Legacy Positions</h1>
 
-{% if active.mode == 'PROD' %}
-<div class="panel panel-danger">
-  <strong>PROD mode</strong> &mdash; Non-dry-run import will write to the production database.
-</div>
-{% endif %}
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">Import Legacy Positions</div>
+  <p class="muted">Seed open positions from a CSV file on the server filesystem. Use Dry Run first.</p>
 
-<div class="panel">
   <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
     <label for="csv_path">CSV Path (server filesystem)</label>
-    <input type="text" id="csv_path" name="csv_path" placeholder="/path/to/legacy_positions.csv" required>
+    <input type="text" id="csv_path" name="csv_path" placeholder="C:\path\to\legacy_positions.csv" required>
 
     <label for="seed_date">Seed Date (YYYY-MM-DD)</label>
-    <input type="text" id="seed_date" name="seed_date" placeholder="2024-01-01" required>
+    <input type="text" id="seed_date" name="seed_date" placeholder="2026-01-01" required>
 
     <fieldset>
       <legend>Mode</legend>
-      <label class="radio-label">
-        <input type="radio" name="dry_run" value="1" checked> Dry Run (validate only)
-      </label>
-      <label class="radio-label">
-        <input type="radio" name="dry_run" value="0"> Execute (write to DB)
-      </label>
+      <label class="radio-label"><input type="radio" name="dry_run" value="1" checked> Dry Run (validate only)</label>
+      <label class="radio-label"><input type="radio" name="dry_run" value="0"> Execute (write to DB)</label>
     </fieldset>
 
     <button type="submit">Import</button>
+    <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary">Back to Setup</a>
   </form>
 </div>
+
 {% endblock %}

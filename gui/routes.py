@@ -21,7 +21,7 @@ def _require_active_db():
     """Return ActiveDbContext or None (flashes error if missing)."""
     active = load_active_db()
     if active is None:
-        flash("No active DB selected. Go to Change DB first.", "error")
+        flash("No active DB selected. Go to Setup first.", "error")
     return active
 
 
@@ -61,14 +61,166 @@ def _format_qty(value):
     return s.rstrip('0').rstrip('.') if '.' in s else s
 
 
+def _redirect_after_write(default_endpoint: str):
+    """Honor a posted 'next_url' (must be relative) or fall back to a default route."""
+    next_url = (request.form.get("next_url") or "").strip()
+    if next_url and next_url.startswith("/") and not next_url.startswith("//"):
+        return redirect(next_url)
+    return redirect(url_for(default_endpoint))
+
+
+def _build_breakdown_rows(s):
+    breakdown = s.get("asset_class_breakdown", {}) or {}
+    total_equity = Decimal(str(s.get("total_equity", 0)))
+    rows = []
+    for asset_class in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
+        equity = Decimal(str(breakdown.get(asset_class, 0)))
+        if total_equity > 0:
+            pct = ((equity / total_equity) * Decimal("100")).quantize(Decimal("0.01"))
+        else:
+            pct = Decimal("0.00")
+        rows.append({"asset_class": asset_class, "equity": equity, "pct": pct})
+    return rows
+
+
 # ---------------------------------------------------------------------------
-# H1 routes
+# H3 — Dashboard (home)
 # ---------------------------------------------------------------------------
 
 @bp.get("/")
-def home():
-    return render_template("home.html")
+def dashboard():
+    active = load_active_db()
+    if active is None:
+        return render_template("dashboard.html", active=None, active_section="dashboard")
 
+    summary = None
+    positions_list = []
+    breakdown_rows = []
+    top_positions = []
+    counts = {}
+    warnings = []
+    load_error = None
+
+    try:
+        db, _, tx_svc, pnl_svc = _get_db_and_services(active)
+        try:
+            positions_list = pnl_svc.positions()
+            summary = pnl_svc.summary()
+            tx_count = len(tx_svc.list_transactions(limit=10000))
+        finally:
+            db.close()
+
+        breakdown_rows = _build_breakdown_rows(summary)
+        top_positions = sorted(
+            [p for p in positions_list if p.get("approved_value") is not None and p["qty_open"] > 0],
+            key=lambda p: Decimal(str(p["approved_value"])),
+            reverse=True,
+        )[:5]
+
+        counts = summary.get("price_quality_counts", {}) or {}
+        stale = int(counts.get("stale", 0) or 0)
+        unavailable = int(counts.get("unavailable", 0) or 0)
+        unvalued = int(summary.get("unvalued_positions", 0) or 0)
+        cash = Decimal(str(summary.get("cash_balance", 0)))
+        if stale:
+            warnings.append(f"{stale} position(s) have stale prices.")
+        if unavailable:
+            warnings.append(f"{unavailable} position(s) have unavailable prices.")
+        if unvalued:
+            warnings.append(f"{unvalued} position(s) have no approved valuation and are excluded from total equity.")
+        if cash < 0:
+            warnings.append(f"Cash balance is negative: {_format_money(cash)}.")
+    except Exception as exc:
+        load_error = str(exc)
+        tx_count = 0
+
+    return render_template(
+        "dashboard.html",
+        active=active,
+        active_section="dashboard",
+        summary=summary,
+        positions_count=len([p for p in positions_list if p.get("qty_open", 0) > 0]),
+        tx_count=tx_count,
+        top_positions=top_positions,
+        breakdown_rows=breakdown_rows,
+        counts=counts,
+        warnings=warnings,
+        load_error=load_error,
+        format_money=_format_money,
+        format_qty=_format_qty,
+    )
+
+
+# ---------------------------------------------------------------------------
+# H3 — Hubs
+# ---------------------------------------------------------------------------
+
+@bp.get("/operations")
+def operations():
+    active = load_active_db()
+    return render_template(
+        "operations.html",
+        active=active,
+        active_section="operations",
+        next_url=url_for("gui.operations"),
+    )
+
+
+@bp.get("/setup")
+def setup():
+    active = load_active_db()
+    return render_template(
+        "setup.html",
+        active=active,
+        active_section="setup",
+        backup_root=_backup_root(),
+        next_url=url_for("gui.setup"),
+    )
+
+
+@bp.get("/reports")
+def reports():
+    active = load_active_db()
+    if active is None:
+        return render_template(
+            "reports.html",
+            active=None,
+            active_section="reports",
+        )
+
+    try:
+        db, _, _, pnl_svc = _get_db_and_services(active)
+        try:
+            positions_list = pnl_svc.positions()
+            s = pnl_svc.summary()
+        finally:
+            db.close()
+        breakdown_rows = _build_breakdown_rows(s)
+        counts = s.get("price_quality_counts", {}) or {}
+    except Exception as exc:
+        return render_template(
+            "reports.html",
+            active=active,
+            active_section="reports",
+            load_error=str(exc),
+        )
+
+    return render_template(
+        "reports.html",
+        active=active,
+        active_section="reports",
+        s=s,
+        positions=positions_list,
+        breakdown_rows=breakdown_rows,
+        counts=counts,
+        format_money=_format_money,
+        format_qty=_format_qty,
+    )
+
+
+# ---------------------------------------------------------------------------
+# DB context / backup
+# ---------------------------------------------------------------------------
 
 @bp.route("/db-context", methods=["GET", "POST"])
 def db_context():
@@ -81,18 +233,22 @@ def db_context():
                 f"Active DB set: {context.db_path} [{context.mode}]",
                 "success",
             )
-            return redirect(url_for("gui.db_context"))
+            return _redirect_after_write("gui.db_context")
         except ValueError as exc:
             flash(str(exc), "error")
 
-    return render_template("db_context.html")
+    return render_template(
+        "db_context.html",
+        active_section="setup",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 @bp.post("/db-context/clear")
 def db_context_clear():
     clear_active_db()
     flash("Active DB cleared. No database is currently selected.", "success")
-    return redirect(url_for("gui.db_context"))
+    return _redirect_after_write("gui.db_context")
 
 
 @bp.route("/backup", methods=["GET", "POST"])
@@ -101,7 +257,7 @@ def backup():
         active = load_active_db()
         if active is None:
             flash("Cannot create backup: no active DB selected.", "error")
-            return redirect(url_for("gui.backup"))
+            return _redirect_after_write("gui.backup")
 
         try:
             backup_path = create_backup(active.db_path, _backup_root())
@@ -109,20 +265,25 @@ def backup():
         except Exception as exc:
             flash(f"Backup failed: {exc}", "error")
 
-        return redirect(url_for("gui.backup"))
+        return _redirect_after_write("gui.backup")
 
-    return render_template("backup.html", backup_root=_backup_root())
+    return render_template(
+        "backup.html",
+        active_section="setup",
+        backup_root=_backup_root(),
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 # ---------------------------------------------------------------------------
-# H2 routes – Setup
+# Setup write routes
 # ---------------------------------------------------------------------------
 
 @bp.route("/init-db", methods=["GET", "POST"])
 def init_db():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
         try:
@@ -138,16 +299,21 @@ def init_db():
             flash(f"Database initialized at {active.db_path}", "success")
         except Exception as exc:
             flash(f"Init failed: {exc}", "error")
-        return redirect(url_for("gui.init_db"))
+        return _redirect_after_write("gui.init_db")
 
-    return render_template("init_db.html", active=active)
+    return render_template(
+        "init_db.html",
+        active=active,
+        active_section="setup",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 @bp.route("/import-legacy", methods=["GET", "POST"])
 def import_legacy():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
         csv_path = request.form.get("csv_path", "").strip()
@@ -156,13 +322,13 @@ def import_legacy():
 
         if not csv_path:
             flash("CSV path is required.", "error")
-            return redirect(url_for("gui.import_legacy"))
+            return _redirect_after_write("gui.import_legacy")
         if not seed_date:
             flash("Seed date is required.", "error")
-            return redirect(url_for("gui.import_legacy"))
+            return _redirect_after_write("gui.import_legacy")
         if not os.path.isfile(csv_path):
             flash(f"File not found: {csv_path}", "error")
-            return redirect(url_for("gui.import_legacy"))
+            return _redirect_after_write("gui.import_legacy")
 
         try:
             from portfolio_tracker_v2.core import Database
@@ -188,20 +354,25 @@ def import_legacy():
         except Exception as exc:
             flash(f"Import failed: {exc}", "error")
 
-        return redirect(url_for("gui.import_legacy"))
+        return _redirect_after_write("gui.import_legacy")
 
-    return render_template("import_legacy.html", active=active)
+    return render_template(
+        "import_legacy.html",
+        active=active,
+        active_section="setup",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 # ---------------------------------------------------------------------------
-# H2 routes – Write operations
+# Operations write routes
 # ---------------------------------------------------------------------------
 
 @bp.route("/add-transaction", methods=["GET", "POST"])
 def add_transaction():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
         try:
@@ -215,7 +386,6 @@ def add_transaction():
             fee_usd = Decimal(fee_raw) if fee_raw else Decimal("0")
             notes = request.form.get("notes", "").strip() or None
 
-            # Validations
             if side not in ("BUY", "SELL"):
                 raise ValueError("Side must be BUY or SELL")
             if not account:
@@ -256,16 +426,21 @@ def add_transaction():
         except ValueError as exc:
             flash(str(exc), "error")
 
-        return redirect(url_for("gui.add_transaction"))
+        return _redirect_after_write("gui.add_transaction")
 
-    return render_template("add_transaction.html", active=active)
+    return render_template(
+        "add_transaction.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 @bp.route("/add-cdt", methods=["GET", "POST"])
 def add_cdt():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
         try:
@@ -319,16 +494,21 @@ def add_cdt():
         except ValueError as exc:
             flash(str(exc), "error")
 
-        return redirect(url_for("gui.add_cdt"))
+        return _redirect_after_write("gui.add_cdt")
 
-    return render_template("add_cdt.html", active=active)
+    return render_template(
+        "add_cdt.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 @bp.route("/add-fund-movement", methods=["GET", "POST"])
 def add_fund_movement():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
         try:
@@ -375,22 +555,26 @@ def add_fund_movement():
         except ValueError as exc:
             flash(str(exc), "error")
 
-        return redirect(url_for("gui.add_fund_movement"))
+        return _redirect_after_write("gui.add_fund_movement")
 
-    return render_template("add_fund_movement.html", active=active)
+    return render_template(
+        "add_fund_movement.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
+    )
 
 
 # ---------------------------------------------------------------------------
-# H2 routes – Read-only views
+# Read-only views
 # ---------------------------------------------------------------------------
 
 @bp.get("/transactions")
 def transactions():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
-    # Query params for filters
     account = request.args.get("account", "").strip() or None
     symbol = request.args.get("symbol", "").strip().upper() or None
     side = request.args.get("side", "").strip().upper() or None
@@ -407,6 +591,7 @@ def transactions():
     return render_template(
         "transactions.html",
         active=active,
+        active_section="ledger",
         rows=rows,
         filters={"account": account or "", "symbol": symbol or "", "side": side or "", "limit": limit},
         format_money=_format_money,
@@ -414,11 +599,11 @@ def transactions():
     )
 
 
-@bp.get("/positions")
-def positions():
+@bp.get("/portfolio")
+def portfolio():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     account = request.args.get("account", "").strip() or None
 
@@ -428,21 +613,36 @@ def positions():
     finally:
         db.close()
 
+    total_value = Decimal("0")
+    total_cost = Decimal("0")
+    for p in rows:
+        if p.get("approved_value") is not None and p["qty_open"] > 0:
+            total_value += Decimal(str(p["approved_value"]))
+        if p.get("cost_basis") is not None:
+            total_cost += Decimal(str(p["cost_basis"]))
+
     return render_template(
         "positions.html",
         active=active,
+        active_section="portfolio",
         rows=rows,
         filters={"account": account or ""},
+        total_value=total_value,
+        total_cost=total_cost,
         format_money=_format_money,
         format_qty=_format_qty,
     )
+
+
+# Backwards-compatible /positions URL with its own endpoint name.
+bp.add_url_rule("/positions", endpoint="positions", view_func=portfolio, methods=["GET"])
 
 
 @bp.get("/summary")
 def summary():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     account = request.args.get("account", "").strip() or None
 
@@ -452,21 +652,12 @@ def summary():
     finally:
         db.close()
 
-    # Build breakdown rows with percentages
-    breakdown = s.get("asset_class_breakdown", {}) or {}
-    total_equity = Decimal(str(s.get("total_equity", 0)))
-    breakdown_rows = []
-    for asset_class in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
-        equity = Decimal(str(breakdown.get(asset_class, 0)))
-        if total_equity > 0:
-            pct = ((equity / total_equity) * Decimal("100")).quantize(Decimal("0.01"))
-        else:
-            pct = Decimal("0.00")
-        breakdown_rows.append({"asset_class": asset_class, "equity": equity, "pct": pct})
+    breakdown_rows = _build_breakdown_rows(s)
 
     return render_template(
         "summary.html",
         active=active,
+        active_section="reports",
         s=s,
         breakdown_rows=breakdown_rows,
         filters={"account": account or ""},
@@ -478,7 +669,7 @@ def summary():
 def daily_report():
     active = _require_active_db()
     if active is None:
-        return redirect(url_for("gui.db_context"))
+        return redirect(url_for("gui.setup"))
 
     account = request.args.get("account", "").strip() or None
 
@@ -489,19 +680,8 @@ def daily_report():
     finally:
         db.close()
 
-    # Build breakdown rows
-    breakdown = s.get("asset_class_breakdown", {}) or {}
-    total_equity = Decimal(str(s.get("total_equity", 0)))
-    breakdown_rows = []
-    for asset_class in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
-        equity = Decimal(str(breakdown.get(asset_class, 0)))
-        if total_equity > 0:
-            pct = ((equity / total_equity) * Decimal("100")).quantize(Decimal("0.01"))
-        else:
-            pct = Decimal("0.00")
-        breakdown_rows.append({"asset_class": asset_class, "equity": equity, "pct": pct})
+    breakdown_rows = _build_breakdown_rows(s)
 
-    # Price quality
     counts = s.get("price_quality_counts", {}) or {}
     warnings = []
     stale = int(counts.get("stale", 0) or 0)
@@ -516,6 +696,7 @@ def daily_report():
     return render_template(
         "daily_report.html",
         active=active,
+        active_section="reports",
         s=s,
         positions=positions_list,
         breakdown_rows=breakdown_rows,

@@ -1,16 +1,14 @@
 {% extends "base.html" %}
 
+{% block page_title %}Add Transaction{% endblock %}
+
 {% block content %}
-<h1>Add Transaction</h1>
 
-{% if active.mode == 'PROD' %}
-<div class="panel panel-danger">
-  <strong>PROD mode</strong> &mdash; This will write to the production database.
-</div>
-{% endif %}
-
-<div class="panel">
+<div class="panel" style="max-width: 540px;">
+  <div class="panel-title">Record BUY / SELL</div>
   <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
     <label for="side">Side</label>
     <select id="side" name="side" required>
       <option value="BUY">BUY</option>
@@ -21,10 +19,10 @@
     <input type="text" id="account" name="account" required placeholder="e.g. Binance">
 
     <label for="symbol">Symbol</label>
-    <input type="text" id="symbol" name="symbol" required placeholder="e.g. BTC">
+    <input type="text" id="symbol" name="symbol" required placeholder="BTC">
 
-    <label for="tx_date">Date (YYYY-MM-DD, blank = today)</label>
-    <input type="text" id="tx_date" name="tx_date" placeholder="2024-01-15">
+    <label for="tx_date">Date (YYYY-MM-DD)</label>
+    <input type="text" id="tx_date" name="tx_date" required placeholder="2026-04-18">
 
     <label for="qty">Quantity</label>
     <input type="text" id="qty" name="qty" required placeholder="0.5">
@@ -39,6 +37,8 @@
     <input type="text" id="notes" name="notes">
 
     <button type="submit">Record Transaction</button>
+    <a href="{{ url_for('gui.operations') }}" class="btn btn-secondary">Cancel</a>
   </form>
 </div>
+
 {% endblock %}

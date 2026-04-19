@@ -1,24 +1,39 @@
 {% extends "base.html" %}
 
+{% block page_title %}DB Context{% endblock %}
+
 {% block content %}
-<h1>DB Context</h1>
-<p>Define explicitamente la DB activa para esta GUI. No hay fallback silencioso.</p>
 
-<form method="post" class="panel">
-  <label for="db_path">DB path (full path recommended)</label>
-  <input id="db_path" name="db_path" type="text" required placeholder="C:\\imp\\portfolio_tracker_v2\\portfolio.db" value="{{ gui_active_db.db_path if gui_active_db else '' }}">
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">Active Database</div>
+  <p class="muted">Define explicitly the active DB for this GUI. There is no silent fallback.</p>
 
-  <fieldset>
-    <legend>Mode</legend>
-    <label><input type="radio" name="mode" value="TEST" {% if gui_active_db and gui_active_db.mode == 'TEST' %}checked{% endif %} required> TEST</label>
-    <label><input type="radio" name="mode" value="PROD" {% if gui_active_db and gui_active_db.mode == 'PROD' %}checked{% endif %} required> PROD</label>
-  </fieldset>
+  <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
 
-  <button type="submit">Save active DB</button>
-</form>
+    <label for="db_path">DB path (full path recommended)</label>
+    <input id="db_path" name="db_path" type="text" required
+           placeholder="C:\imp\portfolio_tracker_v2\portfolio.db"
+           value="{{ gui_active_db.db_path if gui_active_db else '' }}">
 
-<form method="post" action="{{ url_for('gui.db_context_clear') }}" class="panel panel-danger">
-  <p>Clear active DB context.</p>
-  <button type="submit">Clear active DB</button>
-</form>
+    <fieldset>
+      <legend>Mode</legend>
+      <label class="radio-label"><input type="radio" name="mode" value="TEST" {% if gui_active_db and gui_active_db.mode == 'TEST' %}checked{% endif %} required> TEST</label>
+      <label class="radio-label"><input type="radio" name="mode" value="PROD" {% if gui_active_db and gui_active_db.mode == 'PROD' %}checked{% endif %} required> PROD</label>
+    </fieldset>
+
+    <button type="submit">Save active DB</button>
+    <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary">Back to Setup</a>
+  </form>
+</div>
+
+<div class="panel panel-danger" style="max-width: 620px;">
+  <div class="panel-title">Clear active DB</div>
+  <form method="post" action="{{ url_for('gui.db_context_clear') }}">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+    <p class="muted">Removes the saved active DB context.</p>
+    <button type="submit" class="btn-danger">Clear active DB</button>
+  </form>
+</div>
+
 {% endblock %}

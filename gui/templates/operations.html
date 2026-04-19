@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+
+{% block page_title %}Operations{% endblock %}
+
+{% block content %}
+
+{% if active is none %}
+  <div class="banner banner-warn">
+    <strong>No active DB</strong>
+    <span>Select a database from <a href="{{ url_for('gui.setup') }}">Setup</a> before recording operations.</span>
+  </div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-title">Operations</div>
+  <p class="muted">Record buys, sells, CDT contracts and fund movements directly from this hub. All forms post to the existing transaction services and validate before writing.</p>
+</div>
+
+<div class="hub-grid">
+
+  {# ---- Add BUY/SELL ---- #}
+  <div class="hub-tile">
+    <h3>Add BUY / SELL</h3>
+    <p>Record a market transaction. Cash ledger is updated automatically.</p>
+    <form method="post" action="{{ url_for('gui.add_transaction') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+
+      <label for="op_side">Side</label>
+      <select id="op_side" name="side" required>
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+      </select>
+
+      <label for="op_account">Account</label>
+      <input type="text" id="op_account" name="account" required placeholder="e.g. Binance">
+
+      <label for="op_symbol">Symbol</label>
+      <input type="text" id="op_symbol" name="symbol" required placeholder="BTC">
+
+      <label for="op_tx_date">Date (YYYY-MM-DD)</label>
+      <input type="text" id="op_tx_date" name="tx_date" required placeholder="2026-04-18">
+
+      <label for="op_qty">Quantity</label>
+      <input type="text" id="op_qty" name="qty" required placeholder="0.5">
+
+      <label for="op_price">Unit Price (USD)</label>
+      <input type="text" id="op_price" name="price" required placeholder="50000">
+
+      <label for="op_fee">Fee (USD)</label>
+      <input type="text" id="op_fee" name="fee" value="0">
+
+      <label for="op_notes">Notes (optional)</label>
+      <input type="text" id="op_notes" name="notes">
+
+      <button type="submit" {% if active is none %}disabled{% endif %}>Record Transaction</button>
+    </form>
+  </div>
+
+  {# ---- Add CDT ---- #}
+  <div class="hub-tile">
+    <h3>Add CDT Contract</h3>
+    <p>Register a fixed-term deposit. Settlement and interest are handled separately.</p>
+    <form method="post" action="{{ url_for('gui.add_cdt') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+
+      <label for="cdt_account">Account</label>
+      <input type="text" id="cdt_account" name="account" required placeholder="BBVA">
+
+      <label for="cdt_symbol">Symbol</label>
+      <input type="text" id="cdt_symbol" name="symbol" value="BBVA CDT">
+
+      <label for="cdt_open">Open Date</label>
+      <input type="text" id="cdt_open" name="open_date" required placeholder="2026-01-15">
+
+      <label for="cdt_maturity">Maturity Date</label>
+      <input type="text" id="cdt_maturity" name="maturity_date" required placeholder="2027-01-15">
+
+      <label for="cdt_principal">Principal</label>
+      <input type="text" id="cdt_principal" name="principal" required placeholder="10000000">
+
+      <label for="cdt_rate">Annual Rate (decimal)</label>
+      <input type="text" id="cdt_rate" name="annual_rate" required placeholder="0.10">
+
+      <label for="cdt_term">Term in Years (optional)</label>
+      <input type="text" id="cdt_term" name="term_years" placeholder="1.0">
+
+      <label for="cdt_notes">Notes (optional)</label>
+      <input type="text" id="cdt_notes" name="notes">
+
+      <button type="submit" {% if active is none %}disabled{% endif %}>Record CDT</button>
+    </form>
+  </div>
+
+  {# ---- Add Fund Movement ---- #}
+  <div class="hub-tile">
+    <h3>Add Fund Movement</h3>
+    <p>Contribution or withdrawal to a fund symbol or USD cash account.</p>
+    <form method="post" action="{{ url_for('gui.add_fund_movement') }}">
+      <input type="hidden" name="next_url" value="{{ next_url }}">
+
+      <label for="fm_account">Account</label>
+      <input type="text" id="fm_account" name="account" required placeholder="Binance">
+
+      <label for="fm_symbol">Symbol</label>
+      <input type="text" id="fm_symbol" name="symbol" required placeholder="__USD_CASH__">
+
+      <label for="fm_date">Date (YYYY-MM-DD)</label>
+      <input type="text" id="fm_date" name="movement_date" required placeholder="2026-04-18">
+
+      <label for="fm_type">Type</label>
+      <select id="fm_type" name="movement_type" required>
+        <option value="CONTRIBUTION">CONTRIBUTION</option>
+        <option value="WITHDRAWAL">WITHDRAWAL</option>
+      </select>
+
+      <label for="fm_amount">Amount (USD)</label>
+      <input type="text" id="fm_amount" name="amount" required placeholder="1000">
+
+      <label for="fm_notes">Notes (optional)</label>
+      <input type="text" id="fm_notes" name="notes">
+
+      <button type="submit" {% if active is none %}disabled{% endif %}>Record Fund Movement</button>
+    </form>
+  </div>
+
+</div>
+
+<div class="panel panel-muted">
+  <div class="panel-title">Not available in GUI yet</div>
+  <p class="muted" style="margin: 0;">CDT settlement, transaction delete, cash ledger backfill and backup restore remain CLI-only for safety.</p>
+</div>
+
+{% endblock %}

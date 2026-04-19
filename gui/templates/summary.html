@@ -1,60 +1,106 @@
 {% extends "base.html" %}
 
+{% block page_title %}Summary{% endblock %}
+
 {% block content %}
-<h1>Summary</h1>
 
 <div class="panel">
   <form method="get" class="filter-form">
-    <label for="account">Account</label>
-    <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
+    <div>
+      <label for="account">Account</label>
+      <input type="text" id="account" name="account" value="{{ filters.account }}" placeholder="(all)">
+    </div>
     <button type="submit">Filter</button>
+    {% if filters.account %}
+      <a href="{{ url_for('gui.summary') }}" class="btn btn-secondary">Clear</a>
+    {% endif %}
   </form>
 </div>
 
 {% if s.total_cost_basis == 0 and s.total_realized_pnl == 0 and s.cash_balance == 0 %}
-<p>No portfolio data found. Database may be empty.</p>
+  <div class="panel empty-state">
+    <h2>No portfolio data</h2>
+    <p>This database may be empty. Run init / import legacy or record transactions first.</p>
+    <a href="{{ url_for('gui.setup') }}" class="qa-btn qa-primary">Go to Setup</a>
+  </div>
 {% else %}
 
-<div class="panel">
-  <h2>Portfolio Summary</h2>
-  <table class="kv-table">
-    <tr><td>Total Cost Basis</td><td class="num">{{ format_money(s.total_cost_basis) }}</td></tr>
-    <tr><td>Total Realized PnL</td><td class="num">{{ format_money(s.total_realized_pnl) }}</td></tr>
-    <tr><td>Cash Balance</td><td class="num">{{ format_money(s.cash_balance) }}</td></tr>
-    <tr><td><strong>Total Equity</strong></td><td class="num"><strong>{{ format_money(s.total_equity) }}</strong></td></tr>
-    <tr><td>Market Covered Value</td><td class="num">{{ format_money(s.market_covered_value) }}</td></tr>
-    <tr><td>Non-Market Valued</td><td class="num">{{ format_money(s.non_market_valued) }}</td></tr>
-    <tr><td>Unvalued Excluded Cost Basis</td><td class="num">{{ format_money(s.unvalued_excluded_cost_basis) }}</td></tr>
-    <tr><td>Unrealized PnL</td><td class="num">{{ format_money(s.total_unrealized_pnl) }}</td></tr>
-    <tr><td>Unrealized Return %</td><td class="num">{{ format_money(s.unrealized_return_pct) }}%</td></tr>
-  </table>
+<div class="cards-grid">
+  <div class="metric-card">
+    <span class="label">Total Equity</span>
+    <span class="value">{{ format_money(s.total_equity) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Cost Basis</span>
+    <span class="value small">{{ format_money(s.total_cost_basis) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Cash Balance</span>
+    <span class="value small {{ 'value-neg' if s.cash_balance < 0 else '' }}">{{ format_money(s.cash_balance) }}</span>
+  </div>
+  <div class="metric-card">
+    <span class="label">Realized PnL</span>
+    <span class="value small {{ 'value-pos' if s.total_realized_pnl > 0 else ('value-neg' if s.total_realized_pnl < 0 else '') }}">{{ format_money(s.total_realized_pnl) }}</span>
+  </div>
+</div>
+
+<div class="row-2">
+  <div class="panel">
+    <div class="panel-title">Portfolio Detail</div>
+    <table class="kv-table">
+      <tr><td>Market Covered Value</td><td class="num">{{ format_money(s.market_covered_value) }}</td></tr>
+      <tr><td>Non-Market Valued</td><td class="num">{{ format_money(s.non_market_valued) }}</td></tr>
+      <tr><td>Unvalued Excluded Cost</td><td class="num">{{ format_money(s.unvalued_excluded_cost_basis) }}</td></tr>
+      <tr><td>Unrealized PnL</td><td class="num {{ 'value-pos' if s.total_unrealized_pnl > 0 else ('value-neg' if s.total_unrealized_pnl < 0 else '') }}">{{ format_money(s.total_unrealized_pnl) }}</td></tr>
+      <tr><td>Unrealized Return %</td><td class="num">{% if s.unrealized_return_pct is not none %}{{ s.unrealized_return_pct }}%{% else %}—{% endif %}</td></tr>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="panel-title">Asset Allocation</div>
+    {% if s.total_equity and s.total_equity > 0 %}
+      <div class="bar-chart">
+        {% for r in breakdown_rows %}
+          <div class="bar-row">
+            <span class="bar-label">{{ r.asset_class }}</span>
+            <div class="bar-track"><div class="bar-fill cls-{{ r.asset_class }}" style="width: {{ r.pct }}%;"></div></div>
+            <span class="bar-pct">{{ r.pct }}%</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">No equity to allocate.</p>
+    {% endif %}
+  </div>
 </div>
 
 <div class="panel">
-  <h2>Price Quality</h2>
+  <div class="panel-title">Asset Class Breakdown</div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Asset Class</th><th class="num">Equity</th><th class="num">%</th></tr>
+      </thead>
+      <tbody>
+        {% for row in breakdown_rows %}
+        <tr>
+          <td>{{ row.asset_class }}</td>
+          <td class="num">{{ format_money(row.equity) }}</td>
+          <td class="num">{{ row.pct }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-title">Price Quality</div>
   {% set counts = s.price_quality_counts or {} %}
   <table class="kv-table">
-    <tr><td>Usable</td><td class="num">{{ counts.get('usable', 0) }}</td></tr>
-    <tr><td>Stale</td><td class="num">{{ counts.get('stale', 0) }}</td></tr>
-    <tr><td>Unavailable</td><td class="num">{{ counts.get('unavailable', 0) }}</td></tr>
-  </table>
-</div>
-
-<div class="panel">
-  <h2>Asset Class Breakdown</h2>
-  <table>
-    <thead>
-      <tr><th>Asset Class</th><th class="num">Equity</th><th class="num">%</th></tr>
-    </thead>
-    <tbody>
-      {% for row in breakdown_rows %}
-      <tr>
-        <td>{{ row.asset_class }}</td>
-        <td class="num">{{ format_money(row.equity) }}</td>
-        <td class="num">{{ row.pct }}%</td>
-      </tr>
-      {% endfor %}
-    </tbody>
+    <tr><td>Usable</td><td class="num value-pos">{{ counts.get('usable', 0) }}</td></tr>
+    <tr><td>Stale</td><td class="num value-warn">{{ counts.get('stale', 0) }}</td></tr>
+    <tr><td>Unavailable</td><td class="num value-neg">{{ counts.get('unavailable', 0) }}</td></tr>
   </table>
 </div>
 
