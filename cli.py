@@ -861,7 +861,9 @@ def cli_add_transaction(tx_date, account, symbol, side, qty, price, fee, notes):
 @click.option("--term", "term_years", default=None, callback=parse_optional_decimal, help="Optional term in years (decimal). If provided, dates remain the source of truth.")
 @click.option("--rate", "annual_rate", required=True, callback=parse_decimal, help="Simple annual rate as decimal. Example: 0.10 = 10%.")
 @click.option("--notes", default=None)
-def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years, annual_rate, notes):
+@click.option("--currency", default="USD", show_default=True, type=click.Choice(["USD", "COP"], case_sensitive=False), help="Currency in which principal is expressed.")
+@click.option("--fx-rate-at-open", "fx_rate_at_open", default=None, callback=parse_optional_decimal, help="FX rate locked at open (units of currency per 1 USD). Required for non-USD.")
+def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years, annual_rate, notes, currency, fx_rate_at_open):
     """Record one manual non-market CDT contract (term is in years)."""
     account_normalized = (account or "").strip()
     if not account_normalized:
@@ -877,6 +879,15 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
         raise click.BadParameter("rate must be >= 0", param_hint="rate")
     if term_years is not None and term_years <= 0:
         raise click.BadParameter("term must be > 0 (years) when provided", param_hint="term")
+
+    currency_normalized = (currency or "USD").strip().upper()
+    if currency_normalized != "USD" and fx_rate_at_open is None:
+        raise click.BadParameter(
+            f"--fx-rate-at-open is required for {currency_normalized}",
+            param_hint="fx_rate_at_open",
+        )
+    if fx_rate_at_open is not None and fx_rate_at_open <= 0:
+        raise click.BadParameter("fx-rate-at-open must be > 0", param_hint="fx_rate_at_open")
 
     open_date_iso = open_date.date().isoformat()
     maturity_date_iso = maturity_date.date().isoformat()
@@ -897,11 +908,17 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
             term_years=term_years,
             annual_rate=annual_rate,
             notes=notes,
+            currency=currency_normalized,
+            fx_rate_at_open=fx_rate_at_open,
         )
         derived_term_years = (Decimal(str((maturity_date.date() - open_date.date()).days)) / Decimal("365")).quantize(Decimal("0.0001"))
         term_fragment = f"term_years_derived={derived_term_years}"
         if term_years is not None:
             term_fragment += f" term_years_input={term_years}"
+        currency_fragment = f"currency={currency_normalized}"
+        if currency_normalized != "USD":
+            principal_usd = (principal / fx_rate_at_open).quantize(Decimal("0.000001"))
+            currency_fragment += f" fx_rate_at_open={fx_rate_at_open} principal_usd={format_money(principal_usd)}"
         click.echo(
             "OK: "
             f"CDT recorded id={tx_id} "
@@ -910,6 +927,7 @@ def cli_add_cdt(account, symbol, open_date, maturity_date, principal, term_years
             f"open_date={open_date_iso} "
             f"maturity_date={maturity_date_iso} "
             f"principal={format_money(principal)} "
+            f"{currency_fragment} "
             f"{term_fragment} "
             f"rate={annual_rate}"
         )
@@ -956,7 +974,9 @@ def cli_settle_cdt(buy_tx_id, settlement_date):
 @click.option("--movement-type", required=True, type=click.Choice(["CONTRIBUTION", "WITHDRAWAL"], case_sensitive=False))
 @click.option("--amount", required=True, callback=parse_decimal)
 @click.option("--notes", default=None)
-def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount, notes):
+@click.option("--currency", default="USD", show_default=True, type=click.Choice(["USD", "COP"], case_sensitive=False), help="Currency in which amount is expressed.")
+@click.option("--fx-rate", "fx_rate", default=None, callback=parse_optional_decimal, help="FX rate for this movement (units of currency per 1 USD). Required for non-USD.")
+def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount, notes, currency, fx_rate):
     """Record one manual non-market fund contribution or withdrawal."""
     account_normalized = (account or "").strip()
     if not account_normalized:
@@ -968,6 +988,15 @@ def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount,
 
     if amount <= 0:
         raise click.BadParameter("amount must be > 0", param_hint="amount")
+
+    currency_normalized = (currency or "USD").strip().upper()
+    if currency_normalized != "USD" and fx_rate is None:
+        raise click.BadParameter(
+            f"--fx-rate is required for {currency_normalized}",
+            param_hint="fx_rate",
+        )
+    if fx_rate is not None and fx_rate <= 0:
+        raise click.BadParameter("fx-rate must be > 0", param_hint="fx_rate")
 
     movement_date_iso = movement_date.date().isoformat()
     movement_type_normalized = movement_type.strip().upper()
@@ -984,7 +1013,13 @@ def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount,
             amount=amount,
             movement_type=movement_type_normalized,
             notes=notes,
+            currency=currency_normalized,
+            fx_rate=fx_rate,
         )
+        currency_fragment = f"currency={currency_normalized}"
+        if currency_normalized != "USD":
+            amount_usd = (amount / fx_rate).quantize(Decimal("0.000001"))
+            currency_fragment += f" fx_rate={fx_rate} amount_usd={format_money(amount_usd)}"
         click.echo(
             "OK: "
             f"FUND movement recorded id={tx_id} "
@@ -992,7 +1027,8 @@ def cli_add_fund_movement(account, symbol, movement_date, movement_type, amount,
             f"symbol={symbol_normalized} "
             f"date={movement_date_iso} "
             f"type={movement_type_normalized} "
-            f"amount={format_money(amount)}"
+            f"amount={format_money(amount)} "
+            f"{currency_fragment}"
         )
     except InvalidTransaction as exc:
         click.echo(f"ERROR: {exc}", err=True)

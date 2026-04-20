@@ -21,8 +21,17 @@
     <label for="maturity_date">Maturity Date (YYYY-MM-DD)</label>
     <input type="text" id="maturity_date" name="maturity_date" required placeholder="2027-01-15">
 
-    <label for="principal">Principal</label>
+    <label for="principal">Principal (in selected currency)</label>
     <input type="text" id="principal" name="principal" required placeholder="10000000">
+
+    <label for="currency">Currency</label>
+    <select id="currency" name="currency">
+      <option value="USD" selected>USD</option>
+      <option value="COP">COP</option>
+    </select>
+
+    <label for="fx_rate_at_open">FX Rate at Open (units of currency per 1 USD, required for COP)</label>
+    <input type="text" id="fx_rate_at_open" name="fx_rate_at_open" placeholder="4000.00">
 
     <label for="annual_rate">Annual Rate (decimal, e.g. 0.10 = 10%)</label>
     <input type="text" id="annual_rate" name="annual_rate" required placeholder="0.10">

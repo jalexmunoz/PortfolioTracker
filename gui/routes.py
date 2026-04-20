@@ -484,6 +484,9 @@ def add_cdt():
             term_raw = request.form.get("term_years", "").strip()
             term_years = Decimal(term_raw) if term_raw else None
             notes = request.form.get("notes", "").strip() or None
+            currency = (request.form.get("currency", "USD") or "USD").strip().upper()
+            fx_raw = request.form.get("fx_rate_at_open", "").strip()
+            fx_rate_at_open = Decimal(fx_raw) if fx_raw else None
 
             if not account:
                 raise ValueError("Account is required")
@@ -497,6 +500,12 @@ def add_cdt():
                 raise ValueError("Annual rate must be >= 0")
             if maturity_date <= open_date:
                 raise ValueError("Maturity date must be after open date")
+            if currency not in ("USD", "COP"):
+                raise ValueError("Currency must be USD or COP")
+            if currency != "USD" and fx_rate_at_open is None:
+                raise ValueError(f"FX Rate at Open is required for {currency}")
+            if fx_rate_at_open is not None and fx_rate_at_open <= 0:
+                raise ValueError("FX Rate at Open must be > 0")
 
             db, resolver, tx_svc, _ = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
@@ -511,10 +520,15 @@ def add_cdt():
                     term_years=term_years,
                     annual_rate=annual_rate,
                     notes=notes,
+                    currency=currency,
+                    fx_rate_at_open=fx_rate_at_open,
                 )
+                detail = f"principal={_format_money(principal)} {currency}"
+                if currency != "USD":
+                    principal_usd = (principal / fx_rate_at_open).quantize(Decimal("0.000001"))
+                    detail += f" (fx={fx_rate_at_open} → {_format_money(principal_usd)} USD)"
                 flash(
-                    f"OK: CDT recorded, tx_id={tx_id}, "
-                    f"principal={_format_money(principal)}, rate={annual_rate}",
+                    f"OK: CDT recorded, tx_id={tx_id}, {detail}, rate={annual_rate}",
                     "success",
                 )
             except InvalidTransaction as exc:
@@ -639,6 +653,9 @@ def add_fund_movement():
             movement_type = request.form.get("movement_type", "").strip().upper()
             amount = _parse_decimal(request.form.get("amount"), "Amount")
             notes = request.form.get("notes", "").strip() or None
+            currency = (request.form.get("currency", "USD") or "USD").strip().upper()
+            fx_raw = request.form.get("fx_rate", "").strip()
+            fx_rate = Decimal(fx_raw) if fx_raw else None
 
             if not account:
                 raise ValueError("Account is required")
@@ -650,6 +667,12 @@ def add_fund_movement():
                 raise ValueError("Movement type must be CONTRIBUTION or WITHDRAWAL")
             if amount <= 0:
                 raise ValueError("Amount must be > 0")
+            if currency not in ("USD", "COP"):
+                raise ValueError("Currency must be USD or COP")
+            if currency != "USD" and fx_rate is None:
+                raise ValueError(f"FX Rate is required for {currency}")
+            if fx_rate is not None and fx_rate <= 0:
+                raise ValueError("FX Rate must be > 0")
 
             db, resolver, tx_svc, _ = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
@@ -662,10 +685,15 @@ def add_fund_movement():
                     amount=amount,
                     movement_type=movement_type,
                     notes=notes,
+                    currency=currency,
+                    fx_rate=fx_rate,
                 )
+                detail = f"amount={_format_money(amount)} {currency}"
+                if currency != "USD":
+                    amount_usd = (amount / fx_rate).quantize(Decimal("0.000001"))
+                    detail += f" (fx={fx_rate} → {_format_money(amount_usd)} USD)"
                 flash(
-                    f"OK: {movement_type} recorded, tx_id={tx_id}, "
-                    f"amount={_format_money(amount)}",
+                    f"OK: {movement_type} recorded, tx_id={tx_id}, {detail}",
                     "success",
                 )
             except InvalidTransaction as exc:

@@ -20,6 +20,8 @@ class TransactionService:
     CDT_CONTRACT_NOTE_PREFIX = "CDT_CONTRACT_V1:"
     FUND_MOVEMENT_TYPES = {"CONTRIBUTION", "WITHDRAWAL"}
     CASH_MOVEMENT_TYPES = {"DEPOSIT", "WITHDRAWAL"}
+    SUPPORTED_CURRENCIES = {"USD", "COP"}
+    FX_USD_QUANTIZE = Decimal("0.000001")
 
 
     def __init__(self, db: Database, resolver: AssetResolver):
@@ -487,8 +489,16 @@ class TransactionService:
         term_years: Optional[Decimal],
         annual_rate: Decimal,
         notes: Optional[str] = None,
+        currency: str = "USD",
+        fx_rate_at_open: Optional[Decimal] = None,
     ) -> int:
-        """Record one manual CDT contract as one BUY lot with contractual metadata."""
+        """Record one manual CDT contract as one BUY lot with contractual metadata.
+
+        For non-USD currencies (COP) the principal is interpreted in that currency
+        and converted to USD using fx_rate_at_open (units of currency per 1 USD).
+        The fx is locked at open: principal and interest at settlement are both
+        valued in USD using this same rate, so no FX PnL is introduced.
+        """
         account_name = (account or "").strip()
         if not account_name:
             raise InvalidTransaction("account cannot be empty")
@@ -504,6 +514,28 @@ class TransactionService:
         if term_years is not None and term_years <= 0:
             raise InvalidTransaction("term must be positive when provided")
 
+        currency_normalized = (currency or "USD").strip().upper()
+        if currency_normalized not in self.SUPPORTED_CURRENCIES:
+            raise InvalidTransaction(
+                f"currency must be one of {sorted(self.SUPPORTED_CURRENCIES)}"
+            )
+
+        if currency_normalized != "USD":
+            if fx_rate_at_open is None:
+                raise InvalidTransaction(
+                    f"fx_rate_at_open is required for {currency_normalized} CDT"
+                )
+            try:
+                fx_rate_at_open_dec = Decimal(str(fx_rate_at_open))
+            except (InvalidOperation, TypeError) as exc:
+                raise InvalidTransaction("fx_rate_at_open must be numeric") from exc
+            if fx_rate_at_open_dec <= 0:
+                raise InvalidTransaction("fx_rate_at_open must be positive")
+            principal_usd = (principal / fx_rate_at_open_dec).quantize(self.FX_USD_QUANTIZE)
+        else:
+            fx_rate_at_open_dec = None
+            principal_usd = principal
+
         open_date_iso = self._parse_iso_date(open_date, "open_date")
         maturity_date_iso = self._parse_iso_date(maturity_date, "maturity_date")
         open_date_obj = datetime.strptime(open_date_iso, "%Y-%m-%d").date()
@@ -516,13 +548,19 @@ class TransactionService:
         contract_payload = {
             "open_date": open_date_iso,
             "maturity_date": maturity_date_iso,
-            "principal": str(principal),
+            "principal": str(principal_usd),
             "term_years": str(derived_term_years),
             "annual_rate": str(annual_rate),
             "term_source": "derived_from_dates",
         }
         if term_years is not None:
             contract_payload["term_years_input"] = str(term_years)
+        if currency_normalized != "USD":
+            contract_payload["currency"] = currency_normalized
+            contract_payload["principal_original"] = str(principal)
+            contract_payload["fx_rate_at_open"] = str(fx_rate_at_open_dec)
+            contract_payload["fx_date"] = open_date_iso
+            contract_payload["principal_usd"] = str(principal_usd)
 
         payload_notes = f"{self.CDT_CONTRACT_NOTE_PREFIX}{json.dumps(contract_payload, separators=(',', ':'))}"
         extra_notes = (notes or "").strip()
@@ -545,9 +583,9 @@ class TransactionService:
                     account_id,
                     "BUY",
                     1.0,
-                    float(principal),
+                    float(principal_usd),
                     0.0,
-                    float(principal),
+                    float(principal_usd),
                     open_date_iso,
                     stored_notes,
                 ),
@@ -558,7 +596,7 @@ class TransactionService:
                 tx_id=tx_id,
                 account_id=account_id,
                 movement_type='CDT_BUY',
-                amount_usd=-principal,
+                amount_usd=-principal_usd,
                 note='Auto cash delta from manual CDT',
             )
             self._set_asset_non_market_valuation(
@@ -580,8 +618,16 @@ class TransactionService:
         amount: Decimal,
         movement_type: str,
         notes: Optional[str] = None,
+        currency: str = "USD",
+        fx_rate: Optional[Decimal] = None,
     ) -> int:
-        """Record one non-market fund movement as monetary balance (no FIFO lot matching)."""
+        """Record one non-market fund movement as monetary balance (no FIFO lot matching).
+
+        For non-USD currencies (COP) the amount is interpreted in that currency
+        and converted to USD using fx_rate (units of currency per 1 USD) for the
+        specific movement. Each movement carries its own fx (no fx lock).
+        Cash impact and the running balance are stored in USD.
+        """
         account_name = (account or "").strip()
         if not account_name:
             raise InvalidTransaction("account cannot be empty")
@@ -602,7 +648,38 @@ class TransactionService:
         if amount_dec <= 0:
             raise InvalidTransaction("amount must be positive")
 
+        currency_normalized = (currency or "USD").strip().upper()
+        if currency_normalized not in self.SUPPORTED_CURRENCIES:
+            raise InvalidTransaction(
+                f"currency must be one of {sorted(self.SUPPORTED_CURRENCIES)}"
+            )
+
+        if currency_normalized != "USD":
+            if fx_rate is None:
+                raise InvalidTransaction(
+                    f"fx_rate is required for {currency_normalized} fund movement"
+                )
+            try:
+                fx_rate_dec = Decimal(str(fx_rate))
+            except (InvalidOperation, TypeError) as exc:
+                raise InvalidTransaction("fx_rate must be numeric") from exc
+            if fx_rate_dec <= 0:
+                raise InvalidTransaction("fx_rate must be positive")
+            amount_usd = (amount_dec / fx_rate_dec).quantize(self.FX_USD_QUANTIZE)
+        else:
+            fx_rate_dec = None
+            amount_usd = amount_dec
+
         movement_note = f"FUND_{movement_type_normalized}"
+        if currency_normalized != "USD":
+            fx_payload = {
+                "currency": currency_normalized,
+                "amount_original": str(amount_dec),
+                "fx_rate": str(fx_rate_dec),
+                "fx_date": movement_date_iso,
+                "amount_usd": str(amount_usd),
+            }
+            movement_note = f"{movement_note}:{json.dumps(fx_payload, separators=(',', ':'))}"
         user_note = (notes or "").strip()
         stored_notes = movement_note if not user_note else f"{movement_note} | {user_note}"
 
@@ -613,9 +690,9 @@ class TransactionService:
             account_id = self._get_or_create_account(account_name, cursor)
             current_balance = self._fund_balance_for_asset_account(cursor, asset["id"], account_id)
 
-            if movement_type_normalized == "WITHDRAWAL" and amount_dec > current_balance:
+            if movement_type_normalized == "WITHDRAWAL" and amount_usd > current_balance:
                 raise InvalidTransaction(
-                    f"Insufficient fund balance: tried to withdraw {amount_dec} but only {current_balance} available"
+                    f"Insufficient fund balance: tried to withdraw {amount_usd} but only {current_balance} available"
                 )
 
             tx_type = "BUY" if movement_type_normalized == "CONTRIBUTION" else "SELL"
@@ -630,16 +707,16 @@ class TransactionService:
                     account_id,
                     tx_type,
                     1.0,
-                    float(amount_dec),
+                    float(amount_usd),
                     0.0,
-                    float(amount_dec),
+                    float(amount_usd),
                     movement_date_iso,
                     stored_notes,
                 ),
             )
             tx_id = cursor.lastrowid
 
-            cash_delta = -amount_dec if movement_type_normalized == 'CONTRIBUTION' else amount_dec
+            cash_delta = -amount_usd if movement_type_normalized == 'CONTRIBUTION' else amount_usd
             self._record_cash_movement(
                 cursor,
                 tx_id=tx_id,

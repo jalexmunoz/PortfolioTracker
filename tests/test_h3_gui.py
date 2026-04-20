@@ -135,6 +135,7 @@ def test_add_cdt_via_gui(gui_env):
         "principal": "1000000",
         "annual_rate": "0.10",
         "term_years": "0.5",
+        "currency": "USD",
         "next_url": "/operations",
     })
     assert resp.status_code == 302
@@ -148,10 +149,55 @@ def test_add_fund_movement_via_gui(gui_env):
         "movement_date": "2026-01-05",
         "movement_type": "CONTRIBUTION",
         "amount": "5000",
+        "currency": "USD",
         "next_url": "/operations",
     })
     assert resp.status_code == 302
     assert resp.headers.get("Location", "").endswith("/operations")
+
+
+def test_add_cdt_cop_via_gui_requires_fx(gui_env):
+    client = gui_env["client"]
+    resp = client.post("/add-cdt", data={
+        "account": "BBVA",
+        "symbol": "BBVA CDT",
+        "open_date": "2026-04-01",
+        "maturity_date": "2026-10-01",
+        "principal": "17000000",
+        "annual_rate": "0.10",
+        "currency": "COP",
+        "next_url": "/operations",
+    }, follow_redirects=True)
+    assert b"FX Rate at Open is required" in resp.data
+
+
+def test_add_cdt_cop_via_gui_succeeds_with_fx(gui_env):
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA",
+        "symbol": "BBVA CDT",
+        "open_date": "2026-04-01",
+        "maturity_date": "2026-10-01",
+        "principal": "17000000",
+        "annual_rate": "0.10",
+        "currency": "COP",
+        "fx_rate_at_open": "4000",
+        "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+
+
+def test_add_fund_cop_via_gui_succeeds_with_fx(gui_env):
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii",
+        "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19",
+        "movement_type": "CONTRIBUTION",
+        "amount": "5000000",
+        "currency": "COP",
+        "fx_rate": "4000",
+        "next_url": "/operations",
+    })
+    assert resp.status_code == 302
 
 
 def test_dashboard_renders_after_writes(gui_env):
@@ -163,6 +209,7 @@ def test_dashboard_renders_after_writes(gui_env):
         "movement_date": "2026-01-05",
         "movement_type": "CONTRIBUTION",
         "amount": "5000",
+        "currency": "USD",
         "next_url": "/",
     })
     # add a BUY
@@ -187,6 +234,7 @@ def test_next_url_rejects_external(gui_env):
         "movement_date": "2026-01-05",
         "movement_type": "CONTRIBUTION",
         "amount": "100",
+        "currency": "USD",
         "next_url": "https://evil.example.com/x",
     })
     assert resp.status_code == 302
@@ -342,13 +390,13 @@ def test_fund_withdrawal_increases_cash_and_lowers_fund_balance(gui_env):
     client.post("/add-fund-movement", data={
         "account": "Trii", "symbol": "FONDO DINAMICO",
         "movement_date": "2026-04-10", "movement_type": "CONTRIBUTION",
-        "amount": "500", "next_url": "/",
+        "amount": "500", "currency": "USD", "next_url": "/",
     })
     cash_after_contrib = _get_cash_balance(gui_env["db_path"], "Trii")
     client.post("/add-fund-movement", data={
         "account": "Trii", "symbol": "FONDO DINAMICO",
         "movement_date": "2026-04-12", "movement_type": "WITHDRAWAL",
-        "amount": "100", "next_url": "/",
+        "amount": "100", "currency": "USD", "next_url": "/",
     })
     cash_after_withdraw = _get_cash_balance(gui_env["db_path"], "Trii")
     assert cash_after_withdraw - cash_after_contrib == Decimal_100()
@@ -372,12 +420,12 @@ def test_fund_withdrawal_over_balance_returns_clear_error(gui_env):
     client.post("/add-fund-movement", data={
         "account": "Trii", "symbol": "FONDO DINAMICO",
         "movement_date": "2026-04-10", "movement_type": "CONTRIBUTION",
-        "amount": "100", "next_url": "/",
+        "amount": "100", "currency": "USD", "next_url": "/",
     })
     resp = client.post("/add-fund-movement", data={
         "account": "Trii", "symbol": "FONDO DINAMICO",
         "movement_date": "2026-04-12", "movement_type": "WITHDRAWAL",
-        "amount": "500", "next_url": "/",
+        "amount": "500", "currency": "USD", "next_url": "/",
     }, follow_redirects=True)
     assert resp.status_code == 200  # not 500
     body = resp.data.decode("utf-8", errors="ignore")
