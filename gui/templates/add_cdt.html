@@ -24,9 +24,10 @@
     <label for="principal">Principal (in selected currency)</label>
     <input type="text" id="principal" name="principal" required placeholder="10000000">
 
-    <label for="currency">Currency</label>
-    <select id="currency" name="currency">
-      <option value="USD" selected>USD</option>
+    <label for="currency">Currency (required)</label>
+    <select id="currency" name="currency" required>
+      <option value="" disabled selected>-- Select currency --</option>
+      <option value="USD">USD</option>
       <option value="COP">COP</option>
     </select>
 

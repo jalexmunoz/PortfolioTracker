@@ -432,6 +432,106 @@ def test_fund_withdrawal_over_balance_returns_clear_error(gui_env):
     assert "Insufficient fund balance" in body
 
 
+# ----- Post-B51 regressions -----
+
+def _db(gui_env):
+    from portfolio_tracker_v2.core import Database
+    return Database(gui_env["db_path"])
+
+
+def test_gui_add_cdt_cop_persists_usd_principal_not_cop(gui_env):
+    """Bug 1 regression: GUI must not store COP principal as USD."""
+    from decimal import Decimal as D
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA",
+        "symbol": "BBVA CDT",
+        "open_date": "2026-04-01",
+        "maturity_date": "2027-04-01",
+        "principal": "20000000",
+        "annual_rate": "0.10",
+        "term_years": "1.0",
+        "currency": "COP",
+        "fx_rate_at_open": "4000",
+        "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+
+    db = _db(gui_env)
+    try:
+        cur = db.connect().cursor()
+        cur.execute("SELECT unit_price, total_usd, notes FROM transactions WHERE notes LIKE 'CDT_CONTRACT_V1:%'")
+        row = cur.fetchone()
+        assert row is not None, "CDT transaction not persisted"
+        unit_price, total_usd, notes = row
+        # 20_000_000 COP / 4000 = 5_000 USD — NOT 20_000_000
+        assert D(str(unit_price)) == D("5000"), f"unit_price was {unit_price}"
+        assert D(str(total_usd)) == D("5000"), f"total_usd was {total_usd}"
+        assert "principal_usd" in notes and "5000.000000" in notes
+    finally:
+        db.close()
+
+
+def test_gui_add_cdt_without_currency_rejected(gui_env):
+    """Bug 1 regression: empty currency must be rejected (no silent USD default)."""
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA",
+        "symbol": "BBVA CDT",
+        "open_date": "2026-04-01",
+        "maturity_date": "2027-04-01",
+        "principal": "20000000",
+        "annual_rate": "0.10",
+        "term_years": "1.0",
+        "next_url": "/operations",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Currency must be selected" in body
+
+
+def test_gui_add_fund_without_currency_rejected(gui_env):
+    """Bug 1 regression: empty currency must be rejected for fund movements."""
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii",
+        "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19",
+        "movement_type": "CONTRIBUTION",
+        "amount": "5000000",
+        "next_url": "/operations",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Currency must be selected" in body
+
+
+def test_gui_add_fund_cop_persists_usd_amount_not_cop(gui_env):
+    """Bug 1 regression: GUI fund COP must convert to USD at origin."""
+    from decimal import Decimal as D
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii",
+        "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19",
+        "movement_type": "CONTRIBUTION",
+        "amount": "5000000",
+        "currency": "COP",
+        "fx_rate": "4000",
+        "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+
+    db = _db(gui_env)
+    try:
+        cur = db.connect().cursor()
+        cur.execute("SELECT total_usd, notes FROM transactions WHERE notes LIKE 'FUND_CONTRIBUTION%'")
+        row = cur.fetchone()
+        assert row is not None
+        total_usd, notes = row
+        # 5_000_000 COP / 4000 = 1_250 USD
+        assert D(str(total_usd)) == D("1250"), f"total_usd was {total_usd}"
+        assert "amount_usd" in notes and "1250.000000" in notes
+    finally:
+        db.close()
+
+
 def test_total_pnl_equals_realized_plus_unrealized(gui_env):
     client = gui_env["client"]
     client.post("/add-cash-movement", data={

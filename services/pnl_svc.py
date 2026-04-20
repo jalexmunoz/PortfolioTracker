@@ -140,6 +140,26 @@ class PnLService:
         cursor.execute(base_query, params)
         return cursor.fetchone()
 
+    def _is_fund_balance_asset(self, asset_id: int) -> bool:
+        """Detect a fund-balance asset by presence of FUND_CONTRIBUTION/WITHDRAWAL notes.
+
+        Back-compat with hardcoded FUND_BALANCE_SYMBOLS for legacy bootstraps that
+        don't carry the FUND_* note prefix.
+        """
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT 1
+            FROM transactions
+            WHERE asset_id = ?
+              AND (notes LIKE 'FUND_CONTRIBUTION%' OR notes LIKE 'FUND_WITHDRAWAL%')
+            LIMIT 1
+            """,
+            (asset_id,),
+        )
+        return cursor.fetchone() is not None
+
     def _get_fund_balance_amount(self, asset_id: int, account: Optional[str]) -> Decimal:
         conn = self.db.connect()
         cursor = conn.cursor()
@@ -223,7 +243,9 @@ class PnLService:
             latest_open_price = Decimal(str(latest_open_buy[1])) if latest_open_buy[1] is not None else None
             latest_open_notes = latest_open_buy[2]
 
-        if valuation_method == 'snapshot_imported' and symbol in self.FUND_BALANCE_SYMBOLS:
+        if valuation_method == 'snapshot_imported' and (
+            symbol in self.FUND_BALANCE_SYMBOLS or self._is_fund_balance_asset(asset_id)
+        ):
             return Decimal('1')
 
         if valuation_method == 'contractual_value':
@@ -407,7 +429,9 @@ class PnLService:
             current_price = Decimal(str(row[0])) if row and row[0] is not None else None
             valuation_method = row[1] if row and row[1] else asset.get('valuation_method', 'unvalued')
 
-            if sym in self.FUND_BALANCE_SYMBOLS and valuation_method in self.APPROVED_NON_MARKET_METHODS:
+            if valuation_method in self.APPROVED_NON_MARKET_METHODS and (
+                sym in self.FUND_BALANCE_SYMBOLS or self._is_fund_balance_asset(asset['id'])
+            ):
                 balance = self._get_fund_balance_amount(asset['id'], acct)
                 qty_open = balance
                 cost_basis = balance

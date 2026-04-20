@@ -318,6 +318,77 @@ def test_unsupported_currency_rejected(tx_svc):
         )
 
 
+# --- Bug 2 regressions: fund balance detection via note prefix ---
+
+def test_fund_cop_arbitrary_symbol_detected_as_fund_balance(tx_svc, pnl_svc):
+    """A fund with symbol outside FUND_BALANCE_SYMBOLS must still be treated as
+    a fund balance when its transactions carry the FUND_CONTRIBUTION/WITHDRAWAL
+    note prefix. Before the fix this produced qty_open=-1 after two SELLs."""
+    tx_svc.record_fund_movement(
+        account="Trii",
+        symbol="FONDO DINAMICO COP",  # NOT in FUND_BALANCE_SYMBOLS
+        movement_date="2026-04-10",
+        amount=Decimal("4000000"),
+        movement_type="CONTRIBUTION",
+        currency="COP",
+        fx_rate=Decimal("4000"),
+    )  # = 1000 USD
+    tx_svc.record_fund_movement(
+        account="Trii",
+        symbol="FONDO DINAMICO COP",
+        movement_date="2026-04-12",
+        amount=Decimal("1000000"),
+        movement_type="WITHDRAWAL",
+        currency="COP",
+        fx_rate=Decimal("4000"),
+    )  # = 250 USD
+    positions = pnl_svc.positions("Trii")
+    rows = [p for p in positions if p["symbol"] == "FONDO DINAMICO COP"]
+    assert len(rows) == 1
+    pos = rows[0]
+    # Fund balance logic: qty=balance, cost=balance, avg_cost=1
+    assert pos["qty_open"] == Decimal("750")
+    assert pos["cost_basis"] == Decimal("750")
+    assert pos["avg_cost"] == Decimal("1")
+    assert pos["approved_value"] == Decimal("750")
+
+
+def test_fund_cop_two_withdrawals_preserve_positive_qty(tx_svc, pnl_svc):
+    """Two COP withdrawals (each < balance) must not produce negative qty_open."""
+    tx_svc.record_fund_movement(
+        account="Trii",
+        symbol="FONDO DINAMICO",
+        movement_date="2026-04-10",
+        amount=Decimal("8000000"),
+        movement_type="CONTRIBUTION",
+        currency="COP",
+        fx_rate=Decimal("4000"),
+    )  # = 2000 USD
+    tx_svc.record_fund_movement(
+        account="Trii",
+        symbol="FONDO DINAMICO",
+        movement_date="2026-04-12",
+        amount=Decimal("2000000"),
+        movement_type="WITHDRAWAL",
+        currency="COP",
+        fx_rate=Decimal("4000"),
+    )  # = 500 USD
+    tx_svc.record_fund_movement(
+        account="Trii",
+        symbol="FONDO DINAMICO",
+        movement_date="2026-04-14",
+        amount=Decimal("2000000"),
+        movement_type="WITHDRAWAL",
+        currency="COP",
+        fx_rate=Decimal("4000"),
+    )  # = 500 USD. Balance = 2000 - 500 - 500 = 1000 USD
+    positions = pnl_svc.positions("Trii")
+    rows = [p for p in positions if p["symbol"] == "FONDO DINAMICO"]
+    assert len(rows) == 1
+    assert rows[0]["qty_open"] == Decimal("1000")
+    assert rows[0]["qty_open"] > 0
+
+
 def test_fund_usd_unchanged(tx_svc, db):
     tx_id = tx_svc.record_fund_movement(
         account="Trii",

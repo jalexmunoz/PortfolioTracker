@@ -484,7 +484,7 @@ def add_cdt():
             term_raw = request.form.get("term_years", "").strip()
             term_years = Decimal(term_raw) if term_raw else None
             notes = request.form.get("notes", "").strip() or None
-            currency = (request.form.get("currency", "USD") or "USD").strip().upper()
+            currency = (request.form.get("currency", "") or "").strip().upper()
             fx_raw = request.form.get("fx_rate_at_open", "").strip()
             fx_rate_at_open = Decimal(fx_raw) if fx_raw else None
 
@@ -501,7 +501,7 @@ def add_cdt():
             if maturity_date <= open_date:
                 raise ValueError("Maturity date must be after open date")
             if currency not in ("USD", "COP"):
-                raise ValueError("Currency must be USD or COP")
+                raise ValueError("Currency must be selected (USD or COP)")
             if currency != "USD" and fx_rate_at_open is None:
                 raise ValueError(f"FX Rate at Open is required for {currency}")
             if fx_rate_at_open is not None and fx_rate_at_open <= 0:
@@ -653,7 +653,7 @@ def add_fund_movement():
             movement_type = request.form.get("movement_type", "").strip().upper()
             amount = _parse_decimal(request.form.get("amount"), "Amount")
             notes = request.form.get("notes", "").strip() or None
-            currency = (request.form.get("currency", "USD") or "USD").strip().upper()
+            currency = (request.form.get("currency", "") or "").strip().upper()
             fx_raw = request.form.get("fx_rate", "").strip()
             fx_rate = Decimal(fx_raw) if fx_raw else None
 
@@ -668,7 +668,7 @@ def add_fund_movement():
             if amount <= 0:
                 raise ValueError("Amount must be > 0")
             if currency not in ("USD", "COP"):
-                raise ValueError("Currency must be USD or COP")
+                raise ValueError("Currency must be selected (USD or COP)")
             if currency != "USD" and fx_rate is None:
                 raise ValueError(f"FX Rate is required for {currency}")
             if fx_rate is not None and fx_rate <= 0:
