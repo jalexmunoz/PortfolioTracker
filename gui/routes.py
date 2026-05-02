@@ -1,9 +1,10 @@
 import csv as _csv_mod
+import io
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, flash, make_response, redirect, render_template, request, url_for
 
 from .backup import create_auto_backup, create_backup
 from .db_context import clear_active_db, load_active_db, set_active_db
@@ -1461,6 +1462,45 @@ def portfolio():
 
 # Backwards-compatible /positions URL with its own endpoint name.
 bp.add_url_rule("/positions", endpoint="positions", view_func=portfolio, methods=["GET"])
+
+
+@bp.get("/portfolio/export.csv")
+def portfolio_export_csv():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    account = request.args.get("account", "").strip() or None
+
+    db, _, _, pnl_svc = _get_db_and_services(active)
+    try:
+        rows = pnl_svc.positions(account)
+    finally:
+        db.close()
+
+    filename = "portfolio_snapshot_{}.csv".format(
+        datetime.now().strftime("%Y%m%d_%H%M%S")
+    )
+
+    buf = io.StringIO()
+    writer = _csv_mod.writer(buf)
+    writer.writerow(["Symbol", "Account", "Qty", "Cost Basis", "Avg Cost", "Method"])
+    for p in rows:
+        if p["qty_open"] <= 0:
+            continue
+        writer.writerow([
+            p["symbol"],
+            p["account"] or "",
+            str(p["qty_open"]),
+            str(p["cost_basis"]),
+            str(p["avg_cost"]),
+            p.get("valuation_method") or "market_live",
+        ])
+
+    response = make_response(buf.getvalue())
+    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
+    response.headers["Content-Type"] = "text/csv; charset=utf-8"
+    return response
 
 
 @bp.get("/summary")

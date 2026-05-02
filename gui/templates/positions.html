@@ -36,6 +36,7 @@
   <div class="panel-title-row">
     <span class="panel-title">Open Positions</span>
     <span class="muted">{{ rows|length }} row(s)</span>
+    <a href="{{ url_for('gui.portfolio_export_csv', account=filters.account) }}" class="btn btn-secondary">Export Portfolio CSV</a>
   </div>
 
   {% if rows %}

@@ -1367,3 +1367,117 @@ def test_b54_invalid_method_makes_row_invalid(gui_env, tmp_path):
     }, follow_redirects=True)
     assert resp2.status_code == 200
     assert _tx_count(gui_env["db_path"]) == before
+
+
+# --- B56: Export Portfolio Snapshot CSV ---
+
+def _seed_position(db_path, symbol, account, qty, cost_basis, valuation_method="market_live"):
+    """Seed a position directly into the DB for export tests."""
+    import sqlite3
+    from decimal import Decimal as D
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO assets (symbol, asset_type, is_active, valuation_method) VALUES (?, 'crypto', 1, ?)",
+            (symbol, valuation_method),
+        )
+        cur.execute("SELECT id FROM assets WHERE symbol = ?", (symbol,))
+        asset_id = cur.fetchone()[0]
+        cur.execute("INSERT OR IGNORE INTO accounts (name) VALUES (?)", (account,))
+        cur.execute("SELECT id FROM accounts WHERE name = ?", (account,))
+        account_id = cur.fetchone()[0]
+        unit_price = float(D(str(cost_basis)) / D(str(qty)))
+        cur.execute(
+            "INSERT INTO transactions (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) "
+            "VALUES (?, ?, 'BUY', ?, ?, 0.0, ?, '2026-01-01')",
+            (asset_id, account_id, qty, unit_price, cost_basis),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_b56_export_returns_200(gui_env):
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    assert resp.status_code == 200
+
+
+def test_b56_export_content_type_is_csv(gui_env):
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    assert "text/csv" in resp.content_type
+
+
+def test_b56_export_filename_contains_portfolio_snapshot(gui_env):
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    disposition = resp.headers.get("Content-Disposition", "")
+    assert "attachment" in disposition
+    assert "portfolio_snapshot" in disposition
+
+
+def test_b56_export_headers_present(gui_env):
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    body = resp.data.decode("utf-8")
+    first_line = body.splitlines()[0]
+    assert first_line == "Symbol,Account,Qty,Cost Basis,Avg Cost,Method"
+
+
+def test_b56_export_empty_portfolio_headers_only(gui_env):
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    body = resp.data.decode("utf-8")
+    lines = [l for l in body.splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert lines[0].startswith("Symbol")
+
+
+def test_b56_export_includes_seeded_position(gui_env):
+    _seed_position(gui_env["db_path"], "BTC", "Binance", qty=0.5, cost_basis=25000.0)
+
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    body = resp.data.decode("utf-8")
+    assert "BTC" in body
+    assert "Binance" in body
+
+
+def test_b56_export_does_not_modify_db(gui_env):
+    _seed_position(gui_env["db_path"], "ETH", "Coinbase", qty=1.0, cost_basis=3000.0)
+    before = _tx_count(gui_env["db_path"])
+
+    gui_env["client"].get("/portfolio/export.csv")
+
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b56_export_row_fields_match_b54_import_columns(gui_env):
+    """Exported CSV rows have exactly the columns B54 import expects."""
+    import csv, io as _io
+    _seed_position(gui_env["db_path"], "SOL", "Phantom", qty=10.0, cost_basis=1500.0)
+
+    resp = gui_env["client"].get("/portfolio/export.csv")
+    body = resp.data.decode("utf-8")
+    reader = csv.DictReader(_io.StringIO(body))
+    rows = list(reader)
+
+    assert len(rows) >= 1
+    sol_row = next(r for r in rows if r["Symbol"] == "SOL")
+    assert sol_row["Account"] == "Phantom"
+    assert float(sol_row["Qty"]) == 10.0
+    assert float(sol_row["Cost Basis"]) == 1500.0
+    assert float(sol_row["Avg Cost"]) == 150.0
+    assert sol_row["Method"] == "market_live"
+
+
+def test_b56_export_with_account_filter(gui_env):
+    _seed_position(gui_env["db_path"], "BTC", "Alpha", qty=1.0, cost_basis=50000.0)
+    _seed_position(gui_env["db_path"], "ETH", "Beta", qty=2.0, cost_basis=6000.0)
+
+    resp = gui_env["client"].get("/portfolio/export.csv?account=Alpha")
+    body = resp.data.decode("utf-8")
+    assert "BTC" in body
+    assert "ETH" not in body
+
+
+def test_b56_export_no_db_redirects_to_setup(gui_no_db):
+    resp = gui_no_db.get("/portfolio/export.csv")
+    assert resp.status_code in (302, 303)
+    assert "/setup" in resp.headers.get("Location", "")
