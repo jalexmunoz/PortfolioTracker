@@ -607,3 +607,64 @@ def test_refresh_prices_gld_uses_tradingview(db):
     row = cursor.fetchone()
     assert row[0] == pytest.approx(305.5)
     assert row[1] == "tradingview_amex_etf"
+
+
+# --- B55: GOOG TradingView mapping ---
+
+def test_resolve_provider_goog_routes_to_tradingview_nasdaq():
+    resolution = resolve_provider('GOOG', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'tradingview'
+    assert resolution.provider_symbol == 'GOOG'
+    assert resolution.exchange == 'NASDAQ'
+    assert resolution.price_source == 'tradingview_nasdaq_us'
+
+
+def test_refresh_prices_goog_uses_tradingview(db):
+    add_active_holding(db, 'GOOG', 'stock_us')
+
+    filled_df = pd.DataFrame([{"open": 168.0, "high": 170.0, "low": 167.5, "close": 169.5, "volume": 1.0}])
+    with patch("portfolio_tracker_v2.services.tradingview_fetcher.get_tradingview_ohlc") as mock_tv:
+        mock_tv.return_value = filled_df
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "tradingview"
+    assert report.results[0].provider_symbol == "GOOG"
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'GOOG'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(169.5)
+    assert row[1] == "tradingview_nasdaq_us"
+
+
+# --- B55: USDT stablecoin peg ---
+
+def test_resolve_provider_usdt_routes_to_stablecoin_peg():
+    resolution = resolve_provider('USDT', 'stablecoin')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'hardcoded'
+    assert resolution.price_source == 'stablecoin_peg'
+
+
+def test_refresh_prices_usdt_stablecoin_peg(db):
+    add_active_holding(db, 'USDT', 'stablecoin')
+
+    with patch("portfolio_tracker_v2.services.price_svc.requests.get") as mock_get:
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "hardcoded"
+    assert report.results[0].status == "updated"
+    mock_get.assert_not_called()
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'USDT'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(1.0)
+    assert row[1] == "stablecoin_peg"

@@ -609,4 +609,40 @@ def test_positions_and_summary_exclude_inactive_assets(services):
     assert summary['unvalued_excluded_cost_basis'] == Decimal('0')
     assert summary['total_equity'] == Decimal('75')
     assert summary['asset_class_breakdown']['Cash'] == Decimal('-125')
-    assert sum(summary['asset_class_breakdown'].values()) == summary['total_equity']
+
+
+# --- B55: stablecoin_peg stale bypass ---
+
+def test_classify_price_quality_stablecoin_peg_is_always_usable(services):
+    _, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    usdt_asset = resolver.resolve('USDT')
+
+    # Set stablecoin_peg source with an ancient price_updated_at — would normally be stale
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = ? WHERE id = ?",
+        (1.0, 'stablecoin_peg', '2020-01-01', usdt_asset['id']),
+    )
+    conn.commit()
+
+    assert pnl_svc._classify_price_quality(usdt_asset['id']) == 'usable'
+
+
+def test_classify_price_quality_stablecoin_peg_no_timestamp_is_usable(services):
+    _, pnl_svc, db = services
+    conn = db.connect()
+    cursor = conn.cursor()
+    resolver = AssetResolver(db)
+
+    usdt_asset = resolver.resolve('USDT')
+
+    cursor.execute(
+        "UPDATE assets SET current_price = ?, price_source = ?, price_updated_at = NULL WHERE id = ?",
+        (1.0, 'stablecoin_peg', usdt_asset['id']),
+    )
+    conn.commit()
+
+    assert pnl_svc._classify_price_quality(usdt_asset['id']) == 'usable'

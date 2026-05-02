@@ -37,9 +37,13 @@ class PnLService:
             (asset_id,),
         )
         row = cursor.fetchone()
-        if not row or row[0] is None or row[2] is None:
+        if not row or row[0] is None:
             return 'unavailable'
         _, price_source, price_updated_at = row
+        if price_source == 'stablecoin_peg':
+            return 'usable'
+        if price_updated_at is None:
+            return 'unavailable'
         price_updated_at = self._parse_price_updated_at(price_updated_at)
         now = datetime.now()
         is_old = price_updated_at < now - timedelta(days=7)

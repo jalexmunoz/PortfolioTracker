@@ -55,6 +55,12 @@ TRADINGVIEW_US_ETF_MAP = {
     "SLV": {"tradingview_symbol": "SLV", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
 }
 
+# US stocks routed through TradingView instead of Alpha Vantage.
+# GOOG: AV free-tier quota is unreliable; TradingView NASDAQ is the preferred source.
+TRADINGVIEW_US_STOCK_MAP = {
+    "GOOG": {"tradingview_symbol": "GOOG", "exchange": "NASDAQ", "currency": "USD", "divisor": 1.0},
+}
+
 
 @dataclass(frozen=True)
 class PriceLookupResult:
@@ -227,6 +233,13 @@ def refresh_prices(db: Database) -> RefreshReport:
 
 def resolve_provider(symbol: str, asset_type: str) -> ProviderResolution:
     """Resolve provider and provider symbol by asset type and symbol."""
+    if asset_type == "stablecoin":
+        return ProviderResolution(
+            status="ok",
+            provider="hardcoded",
+            price_source="stablecoin_peg",
+        )
+
     if asset_type in COINGECKO_SUPPORTED_TYPES:
         coin_id = COINGECKO_SYMBOL_MAP.get(symbol)
         if not coin_id:
@@ -249,6 +262,17 @@ def resolve_provider(symbol: str, asset_type: str) -> ProviderResolution:
                 exchange=etf_metadata["exchange"],
                 currency=etf_metadata["currency"],
                 divisor=float(etf_metadata["divisor"]),
+            )
+        us_stock_metadata = TRADINGVIEW_US_STOCK_MAP.get(symbol)
+        if us_stock_metadata:
+            return ProviderResolution(
+                status="ok",
+                provider="tradingview",
+                provider_symbol=us_stock_metadata["tradingview_symbol"],
+                price_source="tradingview_nasdaq_us",
+                exchange=us_stock_metadata["exchange"],
+                currency=us_stock_metadata["currency"],
+                divisor=float(us_stock_metadata["divisor"]),
             )
         av_symbol = resolve_alpha_vantage_stock_symbol(symbol)
         if not av_symbol:
@@ -307,6 +331,9 @@ def resolve_alpha_vantage_stock_symbol(symbol: str) -> str | None:
 
 
 def lookup_price(resolution: ProviderResolution) -> PriceLookupResult:
+    if resolution.provider == "hardcoded" and resolution.price_source == "stablecoin_peg":
+        return PriceLookupResult(status="ok", price=1.0)
+
     if resolution.provider == "coingecko":
         return get_coingecko_price_by_id(resolution.provider_symbol or "")
 
@@ -317,6 +344,9 @@ def lookup_price(resolution: ProviderResolution) -> PriceLookupResult:
         return get_tradingview_commodity_price(resolution)
 
     if resolution.provider == "tradingview" and resolution.price_source == "tradingview_amex_etf":
+        return get_tradingview_commodity_price(resolution)
+
+    if resolution.provider == "tradingview" and resolution.price_source == "tradingview_nasdaq_us":
         return get_tradingview_commodity_price(resolution)
 
     if resolution.provider == "tradingview" and resolution.price_source == "tradingview_bvc_fx":
