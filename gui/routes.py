@@ -1,3 +1,4 @@
+import csv as _csv_mod
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -458,6 +459,202 @@ def _summary_cash_movement(parsed):
 
 
 # ---------------------------------------------------------------------------
+# B54 — Portfolio Snapshot CSV Import helpers
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_SEED_NOTE = "Seeded from portfolio snapshot"
+_SNAPSHOT_VALID_METHODS = {"market_live", "snapshot_imported", "contractual_value", "unvalued"}
+_SNAPSHOT_REQUIRED_COLS = {"Symbol", "Account", "Qty", "Cost Basis"}
+_SNAPSHOT_COL_ALIASES = {
+    "Quantity": "Qty",
+    "Wallet": "Account",
+    "Total Cost": "Cost Basis",
+    "Total Cost(USD)": "Cost Basis",
+    "Total Cost (USD)": "Cost Basis",
+    "Avg Cost(USD)": "Avg Cost",
+    "Avg Cost (USD)": "Avg Cost",
+}
+
+
+def _parse_snapshot_csv(csv_path):
+    """Parse a Portfolio Snapshot CSV. Returns (valid_rows, invalid_rows)."""
+    valid = []
+    invalid = []
+
+    with open(csv_path, encoding="utf-8-sig", newline="") as fh:
+        reader = _csv_mod.DictReader(fh)
+        if reader.fieldnames is None:
+            raise ValueError("CSV file is empty or has no header row")
+
+        alias_map = {raw: _SNAPSHOT_COL_ALIASES.get((raw or "").strip(), (raw or "").strip())
+                     for raw in reader.fieldnames}
+        canonical_cols = set(alias_map.values())
+        missing = _SNAPSHOT_REQUIRED_COLS - canonical_cols
+        if missing:
+            raise ValueError(f"Missing required columns: {', '.join(sorted(missing))}")
+
+        for row_num, raw_row in enumerate(reader, start=2):
+            row = {alias_map.get(k, k): v for k, v in raw_row.items()}
+            parsed, error = _parse_snapshot_row(row, row_num)
+            if error:
+                invalid.append({"row": row_num, "error": error})
+            else:
+                valid.append(parsed)
+
+    return valid, invalid
+
+
+def _parse_snapshot_row(row, row_num):
+    """Validate and parse one CSV row. Returns (dict, None) or (None, error_str)."""
+    symbol = (row.get("Symbol") or "").strip().upper()
+    if not symbol:
+        return None, "Symbol is required"
+
+    account = (row.get("Account") or "").strip()
+    if not account:
+        return None, "Account is required"
+
+    qty_raw = (row.get("Qty") or "").strip().replace(",", "")
+    if not qty_raw:
+        return None, "Qty is required"
+    try:
+        qty = Decimal(qty_raw)
+    except InvalidOperation:
+        return None, f"Qty must be numeric, got '{qty_raw}'"
+    if qty <= 0:
+        return None, "Qty must be > 0"
+
+    cost_raw = (row.get("Cost Basis") or "").strip().replace("$", "").replace(",", "")
+    if not cost_raw:
+        return None, "Cost Basis is required"
+    try:
+        cost_basis = Decimal(cost_raw)
+    except InvalidOperation:
+        return None, f"Cost Basis must be numeric, got '{cost_raw}'"
+    if cost_basis <= 0:
+        return None, "Cost Basis must be > 0"
+
+    avg_raw = (row.get("Avg Cost") or "").strip().replace("$", "").replace(",", "")
+    if avg_raw:
+        try:
+            avg_cost = Decimal(avg_raw)
+        except InvalidOperation:
+            return None, f"Avg Cost must be numeric, got '{avg_raw}'"
+        if avg_cost <= 0:
+            return None, "Avg Cost must be > 0"
+    else:
+        avg_cost = (cost_basis / qty).quantize(Decimal("0.00000001"))
+
+    method_raw = (row.get("Method") or "").strip()
+    method = method_raw if method_raw else "market_live"
+    if method not in _SNAPSHOT_VALID_METHODS:
+        return None, (
+            f"Unknown Method '{method}'; must be one of: "
+            f"{', '.join(sorted(_SNAPSHOT_VALID_METHODS))}"
+        )
+
+    return {
+        "row_num": row_num,
+        "symbol": symbol,
+        "account": account,
+        "qty": qty,
+        "cost_basis": cost_basis,
+        "avg_cost": avg_cost,
+        "method": method,
+    }, None
+
+
+def _snapshot_preview(valid_rows, invalid_rows):
+    total_cost_basis = sum((r["cost_basis"] for r in valid_rows), Decimal("0"))
+    method_counts = {}
+    for r in valid_rows:
+        method_counts[r["method"]] = method_counts.get(r["method"], 0) + 1
+    return {
+        "total": len(valid_rows) + len(invalid_rows),
+        "valid_count": len(valid_rows),
+        "invalid_count": len(invalid_rows),
+        "total_cost_basis": total_cost_basis,
+        "method_counts": method_counts,
+        "errors": invalid_rows,
+    }
+
+
+def _write_snapshot_rows(active, valid_rows, seed_date):
+    """Write valid snapshot rows atomically. Raises on any error."""
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+
+    db = Database(active.db_path)
+    resolver = AssetResolver(db)
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("BEGIN")
+    try:
+        for i, row in enumerate(valid_rows, start=1):
+            asset = resolver.resolve(row["symbol"])
+            asset_id = asset["id"]
+
+            cursor.execute("SELECT id FROM accounts WHERE name = ?", (row["account"],))
+            acc = cursor.fetchone()
+            if acc:
+                account_id = acc[0]
+            else:
+                cursor.execute("INSERT INTO accounts (name) VALUES (?)", (row["account"],))
+                account_id = cursor.lastrowid
+
+            notes = f"{_SNAPSHOT_SEED_NOTE} (row {row['row_num']})"
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                  (asset_id, account_id, tx_type, quantity, unit_price,
+                   fee_usd, total_usd, tx_date, sort_order, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (asset_id, account_id, "MIGRATION_BUY",
+                 float(row["qty"]), float(row["avg_cost"]),
+                 0.0, float(row["cost_basis"]),
+                 seed_date, i, notes),
+            )
+
+            method = row["method"]
+            if method == "snapshot_imported":
+                cursor.execute(
+                    """UPDATE assets
+                       SET valuation_method = ?, current_price = ?,
+                           price_source = ?, price_updated_at = ?
+                       WHERE id = ?""",
+                    ("snapshot_imported", float(row["avg_cost"]),
+                     "snapshot_imported", seed_date, asset_id),
+                )
+            elif method == "contractual_value":
+                cursor.execute(
+                    "UPDATE assets SET valuation_method = ? WHERE id = ?",
+                    ("contractual_value", asset_id),
+                )
+            elif method == "unvalued":
+                cursor.execute(
+                    "UPDATE assets SET valuation_method = ? WHERE id = ?",
+                    ("unvalued", asset_id),
+                )
+            else:  # market_live — bootstrap price if not already set
+                cursor.execute(
+                    """UPDATE assets
+                       SET current_price = COALESCE(current_price, ?),
+                           price_source = COALESCE(price_source, ?),
+                           price_updated_at = COALESCE(price_updated_at, ?)
+                       WHERE id = ?""",
+                    (float(row["avg_cost"]), "csv_bootstrap", seed_date, asset_id),
+                )
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # H3 — Dashboard (home)
 # ---------------------------------------------------------------------------
 
@@ -755,6 +952,98 @@ def import_legacy():
 
     return render_template(
         "import_legacy.html",
+        active=active,
+        active_section="setup",
+        next_url=request.args.get("next_url", ""),
+    )
+
+
+@bp.route("/import-portfolio-snapshot", methods=["GET", "POST"])
+def import_portfolio_snapshot():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        csv_path = request.form.get("csv_path", "").strip()
+        seed_date = request.form.get("seed_date", "").strip()
+        next_url_val = request.form.get("next_url", "")
+
+        if not csv_path:
+            flash("CSV path is required.", "error")
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+        if not seed_date:
+            flash("Seed date is required.", "error")
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+        if not os.path.isfile(csv_path):
+            flash(f"File not found: {csv_path}", "error")
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+
+        try:
+            valid_rows, invalid_rows = _parse_snapshot_csv(csv_path)
+        except Exception as exc:
+            flash(f"CSV parse error: {exc}", "error")
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+
+        if not confirmed:
+            preview = _snapshot_preview(valid_rows, invalid_rows)
+            return render_template(
+                "import_portfolio_snapshot_preview.html",
+                active=active,
+                active_section="setup",
+                preview=preview,
+                csv_path=csv_path,
+                seed_date=seed_date,
+                next_url=next_url_val,
+                format_money=_format_money,
+            )
+
+        # confirmed=1 path
+        if invalid_rows:
+            flash(
+                f"{len(invalid_rows)} invalid row(s) in CSV. Fix all errors and try again.",
+                "error",
+            )
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+
+        from portfolio_tracker_v2.core import Database as _Db
+        _chk = _Db(active.db_path)
+        try:
+            _cur = _chk.connect().cursor()
+            _cur.execute("SELECT COUNT(*) FROM transactions")
+            tx_count = _cur.fetchone()[0]
+        finally:
+            _chk.close()
+
+        if tx_count > 0:
+            flash(
+                f"DB already has {tx_count} transaction(s). "
+                "Snapshot import is only allowed on an empty database.",
+                "error",
+            )
+            return redirect(url_for("gui.import_portfolio_snapshot"))
+
+        backup_path, abort = _backup_before_write(
+            active, "import_portfolio_snapshot", "gui.import_portfolio_snapshot",
+        )
+        if abort is not None:
+            return abort
+
+        try:
+            _write_snapshot_rows(active, valid_rows, seed_date)
+            flash(
+                f"OK: {len(valid_rows)} row(s) seeded from portfolio snapshot."
+                f"{_backup_suffix(backup_path)}",
+                "success",
+            )
+        except Exception as exc:
+            flash(f"Import failed: {exc}", "error")
+
+        return _redirect_after_write("gui.import_portfolio_snapshot")
+
+    return render_template(
+        "import_portfolio_snapshot.html",
         active=active,
         active_section="setup",
         next_url=request.args.get("next_url", ""),

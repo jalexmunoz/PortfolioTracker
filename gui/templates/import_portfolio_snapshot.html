@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block page_title %}Import Portfolio Snapshot{% endblock %}
+
+{% block content %}
+
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">Import Portfolio Snapshot CSV</div>
+  <p class="muted">Seed open positions from a Portfolio Snapshot CSV. Only allowed on an empty database. A preview is shown before any write.</p>
+  <p class="muted">
+    <strong>Required columns:</strong> <code>Symbol</code>, <code>Account</code>, <code>Qty</code>, <code>Cost Basis</code><br>
+    <strong>Optional:</strong> <code>Avg Cost</code> (defaults to Cost Basis / Qty), <code>Method</code> (defaults to <code>market_live</code>)<br>
+    <strong>Accepted aliases:</strong> Quantity→Qty, Wallet→Account, Total Cost (USD)→Cost Basis, Avg Cost (USD)→Avg Cost<br>
+    <strong>Valid Method values:</strong> <code>market_live</code>, <code>snapshot_imported</code>, <code>contractual_value</code>, <code>unvalued</code>
+  </p>
+
+  <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
+    <label for="csv_path">CSV Path (server filesystem)</label>
+    <input type="text" id="csv_path" name="csv_path" placeholder="C:\path\to\snapshot.csv" required>
+
+    <label for="seed_date">Seed Date (YYYY-MM-DD)</label>
+    <input type="text" id="seed_date" name="seed_date" placeholder="2026-01-01" required>
+
+    <button type="submit">Preview Import</button>
+    <a href="{{ url_for('gui.setup') }}" class="btn btn-secondary">Back to Setup</a>
+  </form>
+</div>
+
+{% endblock %}

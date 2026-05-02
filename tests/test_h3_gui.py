@@ -1124,3 +1124,246 @@ def test_b53_import_legacy_dry_run_does_not_create_backup(gui_env, tmp_path):
     })
     assert resp.status_code == 302
     assert _list_auto_backups(gui_env) == before
+
+
+# ----- B54: Portfolio Snapshot CSV Import -----
+
+def _write_snapshot_csv(tmp_path, rows=None, header=None):
+    """Write a minimal valid Portfolio Snapshot CSV."""
+    csv_path = tmp_path / "snapshot.csv"
+    if header is None:
+        header = "Symbol,Account,Qty,Cost Basis,Avg Cost,Method\n"
+    if rows is None:
+        rows = [
+            "BTC,Binance,0.5,25000,50000,market_live\n",
+            "ETH,Binance,2,4000,2000,market_live\n",
+        ]
+    csv_path.write_text(header + "".join(rows), encoding="utf-8")
+    return csv_path
+
+
+def test_b54_get_renders_form(gui_env):
+    """GET /import-portfolio-snapshot returns 200 with form fields."""
+    resp = gui_env["client"].get("/import-portfolio-snapshot")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Import Portfolio Snapshot" in body
+    assert "csv_path" in body
+    assert "seed_date" in body
+
+
+def test_b54_no_active_db_redirects_to_setup(gui_no_db):
+    """Without an active DB, GET redirects to /setup."""
+    resp = gui_no_db.get("/import-portfolio-snapshot")
+    assert resp.status_code in (302, 303)
+    assert "/setup" in resp.headers.get("Location", "")
+
+
+def test_b54_review_shows_preview_stats(gui_env, tmp_path):
+    """POST without confirmed shows preview with row counts."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "next_url": "/setup",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Preview" in body
+    assert "Valid rows" in body
+    assert "Invalid rows" in body
+    assert "Total rows" in body
+
+
+def test_b54_review_does_not_write_to_db(gui_env, tmp_path):
+    """Preview (no confirmed) does not write any transactions."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    before = _tx_count(gui_env["db_path"])
+    gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b54_review_does_not_create_backup(gui_env, tmp_path):
+    """Preview mode must not create any backup files."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    before = _list_auto_backups(gui_env)
+    gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert _list_auto_backups(gui_env) == before
+
+
+def test_b54_review_shows_invalid_rows(gui_env, tmp_path):
+    """A CSV with a bad row shows errors in the preview."""
+    csv_path = _write_snapshot_csv(tmp_path, rows=[
+        "BTC,Binance,0.5,25000,50000,market_live\n",
+        "ETH,,2,4000,2000,market_live\n",  # missing account
+    ])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "invalid" in body.lower()
+    assert "Account is required" in body
+
+
+def test_b54_review_shows_method_counts(gui_env, tmp_path):
+    """Preview shows breakdown count per method."""
+    csv_path = _write_snapshot_csv(tmp_path, rows=[
+        "BTC,Binance,0.5,25000,50000,market_live\n",
+        "FONDO DINAMICO,Trii,1000,1000,1,snapshot_imported\n",
+    ])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "market_live" in body
+    assert "snapshot_imported" in body
+
+
+def test_b54_review_shows_total_cost_basis(gui_env, tmp_path):
+    """Preview shows formatted sum of all valid cost basis values."""
+    csv_path = _write_snapshot_csv(tmp_path, rows=[
+        "BTC,Binance,0.5,25000,50000,market_live\n",
+        "ETH,Binance,2,4000,2000,market_live\n",
+    ])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    # 25000 + 4000 = 29000
+    assert "29,000.00" in body
+
+
+def test_b54_review_hidden_payload_preserves_path_and_date(gui_env, tmp_path):
+    """Preview page must have hidden inputs for csv_path, seed_date, confirmed."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-15",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert f'name="csv_path" value="{csv_path}"' in body
+    assert 'name="seed_date" value="2026-01-15"' in body
+    assert 'name="confirmed" value="1"' in body
+
+
+def test_b54_confirm_writes_rows(gui_env, tmp_path):
+    """confirmed=1 writes MIGRATION_BUY rows for all valid CSV rows."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+        "next_url": "/setup",
+    })
+    assert resp.status_code == 302
+    assert _tx_count(gui_env["db_path"]) == before + 2
+
+
+def test_b54_confirm_creates_backup(gui_env, tmp_path):
+    """Confirm step creates an auto-backup named with the operation token."""
+    csv_path = _write_snapshot_csv(tmp_path)
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_import_portfolio_snapshot")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b54_confirm_blocked_if_db_has_transactions(gui_env, tmp_path):
+    """Import is blocked when DB already has any transactions."""
+    gui_env["client"].post("/add-cash-movement", data={
+        "account": "Test", "movement_date": "2026-01-01",
+        "movement_type": "DEPOSIT", "amount": "100", "confirmed": "1",
+    })
+    assert _tx_count(gui_env["db_path"]) > 0
+
+    csv_path = _write_snapshot_csv(tmp_path)
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "already has" in body
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b54_confirm_with_invalid_rows_blocked(gui_env, tmp_path):
+    """confirmed=1 with invalid rows flashes error and writes nothing."""
+    csv_path = _write_snapshot_csv(tmp_path, rows=[
+        "BTC,Binance,0.5,25000,50000,market_live\n",
+        "ETH,,2,4000,2000,market_live\n",  # missing account
+    ])
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "invalid" in body.lower()
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b54_csv_col_aliases_accepted(gui_env, tmp_path):
+    """Aliased column names (Quantity, Wallet, Total Cost (USD), Avg Cost (USD)) are accepted."""
+    csv_path = tmp_path / "snapshot_aliases.csv"
+    csv_path.write_text(
+        "Symbol,Wallet,Quantity,Total Cost (USD),Avg Cost (USD)\n"
+        "BTC,Binance,0.5,25000,50000\n",
+        encoding="utf-8",
+    )
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+        "next_url": "/setup",
+    })
+    assert resp.status_code == 302
+    assert _tx_count(gui_env["db_path"]) == before + 1
+
+
+def test_b54_invalid_method_makes_row_invalid(gui_env, tmp_path):
+    """An unknown Method value causes the row to appear as invalid in preview."""
+    csv_path = _write_snapshot_csv(tmp_path, rows=[
+        "BTC,Binance,0.5,25000,50000,BOGUS_METHOD\n",
+    ])
+    resp = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "BOGUS_METHOD" in body
+
+    before = _tx_count(gui_env["db_path"])
+    resp2 = gui_env["client"].post("/import-portfolio-snapshot", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "confirmed": "1",
+    }, follow_redirects=True)
+    assert resp2.status_code == 200
+    assert _tx_count(gui_env["db_path"]) == before

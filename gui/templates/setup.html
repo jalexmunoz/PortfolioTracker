@@ -90,6 +90,17 @@
     {% endif %}
   </div>
 
+  {# ---- Import Portfolio Snapshot ---- #}
+  <div class="hub-tile">
+    <h3>Import Portfolio Snapshot</h3>
+    <p>Seed open positions from a Portfolio Snapshot CSV. Only allowed on an empty database. Preview is shown before writing.</p>
+    {% if active %}
+      <a href="{{ url_for('gui.import_portfolio_snapshot') }}" class="btn btn-secondary">Open Importer</a>
+    {% else %}
+      <p class="muted">Select a database first.</p>
+    {% endif %}
+  </div>
+
   {# ---- Backup ---- #}
   <div class="hub-tile">
     <h3>Manual Backup</h3>

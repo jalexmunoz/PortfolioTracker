@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block page_title %}Import Portfolio Snapshot — Preview{% endblock %}
+
+{% block content %}
+
+<div class="panel" style="max-width: 680px;">
+  <div class="panel-title">Portfolio Snapshot — Preview</div>
+  <p class="muted" style="margin-top: 0;">Review the import below. Nothing has been written to the database yet.</p>
+
+  <table style="width: 100%; border-collapse: collapse; margin: 0.6rem 0 1rem;">
+    <tbody>
+      <tr>
+        <th style="text-align:left;padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);color:var(--text-2);font-weight:500;width:14rem;">Total rows</th>
+        <td style="padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);">{{ preview.total }}</td>
+      </tr>
+      <tr>
+        <th style="text-align:left;padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);color:var(--text-2);font-weight:500;">Valid rows</th>
+        <td style="padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);">{{ preview.valid_count }}</td>
+      </tr>
+      <tr>
+        <th style="text-align:left;padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);color:var(--text-2);font-weight:500;">Invalid rows</th>
+        <td style="padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);">{{ preview.invalid_count }}</td>
+      </tr>
+      <tr>
+        <th style="text-align:left;padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);color:var(--text-2);font-weight:500;">Total cost basis</th>
+        <td style="padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);">{{ format_money(preview.total_cost_basis) }} USD</td>
+      </tr>
+      {% for method, count in preview.method_counts.items() %}
+      <tr>
+        <th style="text-align:left;padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);color:var(--text-2);font-weight:500;padding-left:1.4rem;">{{ method }}</th>
+        <td style="padding:0.35rem 0.6rem;border-bottom:1px solid var(--border-soft);">{{ count }} row(s)</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if preview.errors %}
+  <div class="banner banner-warn">
+    <strong>{{ preview.invalid_count }} invalid row(s) — fix CSV before confirming</strong>
+    <ul style="margin:0.4rem 0 0;padding-left:1.4rem;">
+      {% for e in preview.errors %}
+        <li>Row {{ e.row }}: {{ e.error }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('gui.import_portfolio_snapshot') }}"
+        onsubmit="this.querySelector('button[type=submit]').disabled=true">
+    <input type="hidden" name="confirmed" value="1">
+    <input type="hidden" name="csv_path" value="{{ csv_path }}">
+    <input type="hidden" name="seed_date" value="{{ seed_date }}">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
+    <button type="submit" {% if preview.invalid_count > 0 %}disabled{% endif %}>Confirm and Import</button>
+    <button type="button" onclick="history.back()" class="btn btn-secondary">Go Back / Edit</button>
+  </form>
+</div>
+
+{% endblock %}
