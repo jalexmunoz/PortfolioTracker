@@ -874,3 +874,253 @@ def test_b52_transaction_review_payload_preserves_all_fields(gui_env):
         ("fee", "1.5"), ("notes", "preserve-test"),
     ]:
         assert f'name="{k}" value="{v}"' in body, f"Missing hidden input for {k}={v}"
+
+
+# ----- B53: automatic DB backup before GUI writes -----
+
+def _auto_backup_dir(gui_env):
+    """Resolve where auto-backups land for this gui_env (instance/backups)."""
+    return os.path.join(gui_env["instance_path"], "backups")
+
+
+def _list_auto_backups(gui_env, contains=None):
+    backup_dir = _auto_backup_dir(gui_env)
+    if not os.path.isdir(backup_dir):
+        return []
+    files = [f for f in os.listdir(backup_dir) if f.endswith(".db")]
+    if contains is not None:
+        files = [f for f in files if contains in f]
+    return sorted(files)
+
+
+def test_b53_add_transaction_confirm_creates_backup(gui_env):
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "BTC",
+        "tx_date": "2026-01-15", "qty": "0.5", "price": "50000",
+        "fee": "10", "confirmed": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_add_transaction")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_add_transaction_review_does_not_create_backup(gui_env):
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "BTC",
+        "tx_date": "2026-01-15", "qty": "0.5", "price": "50000",
+        "fee": "10", "review": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 200
+    assert _list_auto_backups(gui_env) == before
+
+
+def test_b53_add_cdt_confirm_creates_backup(gui_env):
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA", "symbol": "BBVA CDT",
+        "open_date": "2026-04-01", "maturity_date": "2027-04-01",
+        "principal": "1000", "annual_rate": "0.10", "term_years": "1.0",
+        "currency": "USD", "confirmed": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_add_cdt")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_add_fund_movement_confirm_creates_backup(gui_env):
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii", "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19", "movement_type": "CONTRIBUTION",
+        "amount": "500", "currency": "USD",
+        "confirmed": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_add_fund_movement")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_add_cash_movement_confirm_creates_backup(gui_env):
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "DEPOSIT",
+        "amount": "100", "confirmed": "1", "next_url": "/",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_add_cash_movement")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_refresh_prices_creates_backup(gui_env, monkeypatch):
+    from portfolio_tracker_v2.services import price_svc
+
+    def fake_refresh(db):
+        return price_svc.RefreshReport(
+            updated=0, skipped_unmapped=0, skipped_unsupported=0,
+            failed_final=0, results=[],
+        )
+
+    monkeypatch.setattr(price_svc, "refresh_prices", fake_refresh)
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/refresh-prices")
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_refresh_prices")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_init_db_creates_backup_when_db_exists(gui_env):
+    """gui_env already initialized the DB, so re-init must create a backup."""
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/init-db")
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_init_db")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_init_db_no_backup_when_db_does_not_exist(tmp_path):
+    """If active.db_path points at a missing file, init_db must succeed without backup."""
+    instance_path = tmp_path / "instance"
+    instance_path.mkdir()
+
+    # Configure an active DB pointing at a not-yet-existing path
+    db_path = tmp_path / "fresh.db"
+    state = {"db_path": str(db_path), "mode": "TEST"}
+    (instance_path / "gui_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    from portfolio_tracker_v2.gui.app import create_app
+    app = create_app(instance_path=str(instance_path))
+    app.config.update({"TESTING": True})
+    client = app.test_client()
+
+    resp = client.post("/init-db")
+    assert resp.status_code == 302  # no error
+    backup_dir = instance_path / "backups"
+    # No backup for a non-existing source; the dir may or may not exist
+    if backup_dir.is_dir():
+        assert [f for f in os.listdir(backup_dir) if f.endswith(".db")] == []
+    # And the DB itself was created by init_db
+    assert db_path.exists()
+
+
+def test_b53_backup_failure_aborts_write(gui_env, monkeypatch):
+    """If backup raises, the write must NOT happen."""
+    from portfolio_tracker_v2.gui import routes as gui_routes
+
+    def boom(db_path, backup_root, operation):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr(gui_routes, "create_auto_backup", boom)
+
+    before_tx = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "BTC",
+        "tx_date": "2026-01-15", "qty": "0.5", "price": "50000",
+        "fee": "0", "confirmed": "1", "next_url": "/operations",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Backup failed" in body
+    assert "NOT executed" in body
+    # Write must NOT have happened
+    assert _tx_count(gui_env["db_path"]) == before_tx
+
+
+def test_b53_flash_includes_backup_path(gui_env):
+    """The success flash must include the backup path."""
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard", "movement_date": "2026-04-18",
+        "movement_type": "DEPOSIT", "amount": "100",
+        "confirmed": "1", "next_url": "/",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "(backup:" in body
+    assert "before_add_cash_movement" in body
+
+
+def test_b53_backups_do_not_overwrite_each_other(gui_env, monkeypatch):
+    """Two writes within the same second must produce two distinct backup files."""
+    # Pin datetime.now() to a fixed value so both writes share the same timestamp.
+    from datetime import datetime as _dt
+    from portfolio_tracker_v2.gui import backup as backup_mod
+
+    fixed = _dt(2026, 5, 1, 12, 0, 0)
+
+    class _FixedDateTime(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr(backup_mod, "datetime", _FixedDateTime)
+
+    client = gui_env["client"]
+    for _ in range(2):
+        client.post("/add-cash-movement", data={
+            "account": "Vanguard", "movement_date": "2026-04-18",
+            "movement_type": "DEPOSIT", "amount": "1",
+            "confirmed": "1", "next_url": "/",
+        })
+    files = _list_auto_backups(gui_env, contains="before_add_cash_movement")
+    assert len(files) == 2
+    assert len(set(files)) == 2  # distinct names
+
+
+def test_b53_legacy_post_also_creates_backup(gui_env):
+    """Defense-in-depth: legacy direct write (no flags) also creates a backup."""
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard", "movement_date": "2026-04-18",
+        "movement_type": "DEPOSIT", "amount": "5", "next_url": "/",
+    })
+    assert resp.status_code == 302
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def _write_legacy_csv(tmp_path):
+    """Write a minimal valid LegacyPositionsCsvImporter CSV in tmp_path."""
+    csv_path = tmp_path / "legacy_seed.csv"
+    csv_path.write_text(
+        "Symbol,Quantity,Total Cost (USD),Avg Cost (USD),Wallet\n"
+        "BTC,1,100.00,100.00,Main\n",
+        encoding="utf-8",
+    )
+    return csv_path
+
+
+def test_b53_import_legacy_creates_backup_when_db_exists(gui_env, tmp_path):
+    """Executed import (not dry_run) must create a backup when the DB exists."""
+    csv_path = _write_legacy_csv(tmp_path)
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/import-legacy", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        # dry_run intentionally omitted = execute
+        "next_url": "/setup",
+    })
+    assert resp.status_code == 302
+    after = _list_auto_backups(gui_env, contains="before_import_legacy")
+    assert len(after) >= 1
+    assert len(_list_auto_backups(gui_env)) == len(before) + 1
+
+
+def test_b53_import_legacy_dry_run_does_not_create_backup(gui_env, tmp_path):
+    """Dry run is read-only and must not create a backup."""
+    csv_path = _write_legacy_csv(tmp_path)
+    before = _list_auto_backups(gui_env)
+    resp = gui_env["client"].post("/import-legacy", data={
+        "csv_path": str(csv_path),
+        "seed_date": "2026-01-01",
+        "dry_run": "1",
+        "next_url": "/setup",
+    })
+    assert resp.status_code == 302
+    assert _list_auto_backups(gui_env) == before

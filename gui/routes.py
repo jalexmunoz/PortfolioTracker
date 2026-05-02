@@ -4,7 +4,7 @@ from decimal import Decimal, InvalidOperation
 
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
-from .backup import create_backup
+from .backup import create_auto_backup, create_backup
 from .db_context import clear_active_db, load_active_db, set_active_db
 
 bp = Blueprint("gui", __name__)
@@ -15,6 +15,40 @@ def _backup_root() -> str:
         "PORTFOLIO_GUI_BACKUP_DIR",
         os.path.join(os.path.dirname(current_app.root_path), "output", "gui_backups"),
     )
+
+
+def _auto_backup_root() -> str:
+    """Directory where automatic pre-write backups land.
+
+    Defaults to <flask_instance>/backups so tests with isolated instance paths
+    are auto-isolated. Override with PORTFOLIO_GUI_AUTO_BACKUP_DIR.
+    """
+    return os.environ.get(
+        "PORTFOLIO_GUI_AUTO_BACKUP_DIR",
+        os.path.join(current_app.instance_path, "backups"),
+    )
+
+
+def _backup_before_write(active, operation: str, redirect_endpoint: str):
+    """Create an auto-backup of the active DB before a write.
+
+    Returns (backup_path_or_none, abort_response_or_none).
+    On success, abort_response is None and the caller may proceed; the path
+    may be None if the source DB does not exist (nothing to back up).
+    On failure, flashes an error and returns a redirect response the caller
+    should return immediately to abort the write.
+    """
+    try:
+        path = create_auto_backup(active.db_path, _auto_backup_root(), operation)
+    except Exception as exc:
+        flash(f"Backup failed; {operation} NOT executed: {exc}", "error")
+        return None, _redirect_after_write(redirect_endpoint)
+    return path, None
+
+
+def _backup_suffix(backup_path) -> str:
+    """Render a flash suffix like ' (backup: <path>)' or '' if no backup."""
+    return f" (backup: {backup_path})" if backup_path else ""
 
 
 def _require_active_db():
@@ -633,6 +667,10 @@ def init_db():
         return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
+        backup_path, abort = _backup_before_write(active, "init_db", "gui.init_db")
+        if abort is not None:
+            return abort
+
         try:
             from portfolio_tracker_v2.core import Database
             from portfolio_tracker_v2.core.asset_resolver import AssetResolver
@@ -643,7 +681,10 @@ def init_db():
             resolver = AssetResolver(db)
             resolver.get_or_create_usd_cash()
             db.close()
-            flash(f"Database initialized at {active.db_path}", "success")
+            flash(
+                f"Database initialized at {active.db_path}{_backup_suffix(backup_path)}",
+                "success",
+            )
         except Exception as exc:
             flash(f"Init failed: {exc}", "error")
         return _redirect_after_write("gui.init_db")
@@ -677,6 +718,14 @@ def import_legacy():
             flash(f"File not found: {csv_path}", "error")
             return _redirect_after_write("gui.import_legacy")
 
+        backup_path = None
+        if not dry_run:
+            backup_path, abort = _backup_before_write(
+                active, "import_legacy", "gui.import_legacy",
+            )
+            if abort is not None:
+                return abort
+
         try:
             from portfolio_tracker_v2.core import Database
             from portfolio_tracker_v2.core.asset_resolver import AssetResolver
@@ -695,7 +744,8 @@ def import_legacy():
             flash(
                 f"[{mode_label}] {result.total_rows} row(s) processed — "
                 f"{result.imported_rows} {'would seed' if dry_run else 'seeded'} OK, "
-                f"{rejected_count} rejected.",
+                f"{rejected_count} rejected."
+                f"{_backup_suffix(backup_path)}",
                 "success" if not rejected_count else "warning",
             )
         except Exception as exc:
@@ -741,6 +791,12 @@ def add_transaction():
                     warning=None,
                 )
 
+            backup_path, abort = _backup_before_write(
+                active, "add_transaction", "gui.add_transaction",
+            )
+            if abort is not None:
+                return abort
+
             db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
@@ -759,7 +815,11 @@ def add_transaction():
                         fee_usd=parsed["fee_usd"], tx_date=parsed["tx_date"],
                         notes=parsed["notes"],
                     )
-                flash(f"OK: {parsed['side']} recorded, tx_id={tx_id}", "success")
+                flash(
+                    f"OK: {parsed['side']} recorded, tx_id={tx_id}"
+                    f"{_backup_suffix(backup_path)}",
+                    "success",
+                )
             except InvalidTransaction as exc:
                 flash(f"Transaction error: {exc}", "error")
             finally:
@@ -804,6 +864,10 @@ def add_cdt():
                     warning=None,
                 )
 
+            backup_path, abort = _backup_before_write(active, "add_cdt", "gui.add_cdt")
+            if abort is not None:
+                return abort
+
             db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
@@ -830,7 +894,8 @@ def add_cdt():
                         f"{_format_money(principal_usd)} USD)"
                     )
                 flash(
-                    f"OK: CDT recorded, tx_id={tx_id}, {detail}, rate={parsed['annual_rate']}",
+                    f"OK: CDT recorded, tx_id={tx_id}, {detail}, "
+                    f"rate={parsed['annual_rate']}{_backup_suffix(backup_path)}",
                     "success",
                 )
             except InvalidTransaction as exc:
@@ -877,6 +942,12 @@ def add_cash_movement():
                     warning=None,
                 )
 
+            backup_path, abort = _backup_before_write(
+                active, "add_cash_movement", "gui.add_cash_movement",
+            )
+            if abort is not None:
+                return abort
+
             db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
@@ -890,7 +961,8 @@ def add_cash_movement():
                 )
                 flash(
                     f"OK: {parsed['movement_type']} recorded, tx_id={tx_id}, "
-                    f"amount={_format_money(parsed['amount'])}",
+                    f"amount={_format_money(parsed['amount'])}"
+                    f"{_backup_suffix(backup_path)}",
                     "success",
                 )
             except InvalidTransaction as exc:
@@ -917,6 +989,12 @@ def refresh_prices_route():
     if active is None:
         return redirect(url_for("gui.setup"))
 
+    backup_path, abort = _backup_before_write(
+        active, "refresh_prices", "gui.dashboard",
+    )
+    if abort is not None:
+        return abort
+
     try:
         from portfolio_tracker_v2.services.price_svc import refresh_prices
 
@@ -935,7 +1013,8 @@ def refresh_prices_route():
             f"{report.updated} updated, "
             f"{report.skipped_unsupported} skipped unsupported, "
             f"{report.skipped_unmapped} skipped unmapped, "
-            f"{report.failed_final} failed final.",
+            f"{report.failed_final} failed final."
+            f"{_backup_suffix(backup_path)}",
             "success" if report.failed_final == 0 else "warning",
         )
     except Exception as exc:
@@ -970,6 +1049,12 @@ def add_fund_movement():
                     warning=_fund_balance_warning(active, parsed),
                 )
 
+            backup_path, abort = _backup_before_write(
+                active, "add_fund_movement", "gui.add_fund_movement",
+            )
+            if abort is not None:
+                return abort
+
             db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
@@ -994,7 +1079,8 @@ def add_fund_movement():
                         f"{_format_money(amount_usd)} USD)"
                     )
                 flash(
-                    f"OK: {parsed['movement_type']} recorded, tx_id={tx_id}, {detail}",
+                    f"OK: {parsed['movement_type']} recorded, tx_id={tx_id}, "
+                    f"{detail}{_backup_suffix(backup_path)}",
                     "success",
                 )
             except InvalidTransaction as exc:
