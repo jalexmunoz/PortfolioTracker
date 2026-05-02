@@ -8,6 +8,7 @@
   <div class="panel-title">Record Fund Movement</div>
   <form method="post">
     <input type="hidden" name="next_url" value="{{ next_url }}">
+    <input type="hidden" name="review" value="1">
 
     <label for="account">Account</label>
     <input type="text" id="account" name="account" required placeholder="Binance">
@@ -40,7 +41,7 @@
     <label for="notes">Notes (optional)</label>
     <input type="text" id="notes" name="notes">
 
-    <button type="submit">Record Fund Movement</button>
+    <button type="submit">Continue / Review</button>
     <a href="{{ url_for('gui.operations') }}" class="btn btn-secondary">Cancel</a>
   </form>
 </div>

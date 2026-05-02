@@ -577,3 +577,300 @@ def Decimal_400():
 def Decimal_200():
     from decimal import Decimal as D
     return D("200")
+
+
+# ----- B52: confirmation/review before write -----
+
+def _tx_count(db_path):
+    from portfolio_tracker_v2.core import Database
+    db = Database(db_path)
+    try:
+        cur = db.connect().cursor()
+        cur.execute("SELECT COUNT(*) FROM transactions")
+        return cur.fetchone()[0]
+    finally:
+        db.close()
+
+
+def test_b52_transaction_review_renders_and_does_not_write(gui_env):
+    """Posting with review=1 must show the review page and not persist anything."""
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "BTC",
+        "tx_date": "2026-01-15", "qty": "0.5", "price": "50000",
+        "fee": "10", "notes": "review-smoke",
+        "review": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review Transaction" in body
+    assert "Confirm and Save" in body
+    assert "Go Back / Edit" in body
+    # Derived values shown:
+    assert "BUY" in body
+    assert "BTC" in body
+    # gross = 0.5 * 50000 = 25,000.00
+    assert "25,000.00" in body
+    # cash impact = -(25000 + 10) = -25,010.00
+    assert "-25,010.00" in body
+    # No DB write yet
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b52_transaction_review_then_confirm_writes_once(gui_env):
+    """Confirm step must persist exactly one transaction."""
+    before = _tx_count(gui_env["db_path"])
+    client = gui_env["client"]
+    # Step 1: review
+    review_resp = client.post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "ETH",
+        "tx_date": "2026-01-15", "qty": "1", "price": "2000",
+        "fee": "5", "review": "1", "next_url": "/operations",
+    })
+    assert review_resp.status_code == 200
+    assert _tx_count(gui_env["db_path"]) == before
+    # Step 2: confirm
+    confirm_resp = client.post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "ETH",
+        "tx_date": "2026-01-15", "qty": "1", "price": "2000",
+        "fee": "5", "confirmed": "1", "next_url": "/operations",
+    })
+    assert confirm_resp.status_code == 302
+    assert confirm_resp.headers.get("Location", "").endswith("/operations")
+    assert _tx_count(gui_env["db_path"]) == before + 1
+
+
+def test_b52_invalid_form_does_not_render_review(gui_env):
+    """If validation fails, review page must NOT render; redirect to form with error."""
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-transaction", data={
+        # qty <= 0 fails validation
+        "side": "BUY", "account": "Binance", "symbol": "BTC",
+        "tx_date": "2026-01-15", "qty": "0", "price": "50000",
+        "fee": "0", "review": "1", "next_url": "/operations",
+    }, follow_redirects=True)
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review Transaction" not in body
+    assert "Confirm and Save" not in body
+    assert ("Qty must be &gt; 0" in body) or ("Qty must be > 0" in body)
+    assert _tx_count(gui_env["db_path"]) == before
+
+
+def test_b52_cdt_review_shows_cop_fx_and_usd_converted(gui_env):
+    """CDT in COP review must show COP, FX rate, and USD converted principal."""
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA", "symbol": "BBVA CDT",
+        "open_date": "2026-04-01", "maturity_date": "2027-04-01",
+        "principal": "20000000", "annual_rate": "0.10",
+        "term_years": "1.0",
+        "currency": "COP", "fx_rate_at_open": "4000",
+        "review": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review CDT Contract" in body
+    # COP principal
+    assert "20,000,000.00 COP" in body
+    # FX rate
+    assert "4000" in body
+    # USD converted: 20_000_000 / 4000 = 5_000
+    assert "5,000.00 USD" in body
+    # Cash impact
+    assert "-5,000.00 USD" in body
+    # Term derived: (365 days / 365) = 1
+    assert "Term Derived" in body
+    assert _tx_count(gui_env["db_path"]) == 0
+
+
+def test_b52_cdt_review_hidden_payload_preserves_currency_and_fx(gui_env):
+    """The review page must round-trip currency & fx_rate_at_open in hidden inputs."""
+    resp = gui_env["client"].post("/add-cdt", data={
+        "account": "BBVA", "symbol": "BBVA CDT",
+        "open_date": "2026-04-01", "maturity_date": "2027-04-01",
+        "principal": "20000000", "annual_rate": "0.10",
+        "term_years": "1.0",
+        "currency": "COP", "fx_rate_at_open": "4000",
+        "review": "1", "next_url": "/operations",
+    })
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert 'name="currency" value="COP"' in body
+    assert 'name="fx_rate_at_open" value="4000"' in body
+    assert 'name="confirmed" value="1"' in body
+
+
+def test_b52_cdt_review_then_confirm_persists_usd_principal(gui_env):
+    """After review → confirm, COP CDT persists with USD principal (regression of B51)."""
+    from decimal import Decimal as D
+    client = gui_env["client"]
+    review_resp = client.post("/add-cdt", data={
+        "account": "BBVA", "symbol": "BBVA CDT",
+        "open_date": "2026-04-01", "maturity_date": "2027-04-01",
+        "principal": "20000000", "annual_rate": "0.10",
+        "term_years": "1.0",
+        "currency": "COP", "fx_rate_at_open": "4000",
+        "review": "1", "next_url": "/operations",
+    })
+    assert review_resp.status_code == 200
+    assert _tx_count(gui_env["db_path"]) == 0
+    confirm_resp = client.post("/add-cdt", data={
+        "account": "BBVA", "symbol": "BBVA CDT",
+        "open_date": "2026-04-01", "maturity_date": "2027-04-01",
+        "principal": "20000000", "annual_rate": "0.10",
+        "term_years": "1.0",
+        "currency": "COP", "fx_rate_at_open": "4000",
+        "confirmed": "1", "next_url": "/operations",
+    })
+    assert confirm_resp.status_code == 302
+    from portfolio_tracker_v2.core import Database
+    db = Database(gui_env["db_path"])
+    try:
+        cur = db.connect().cursor()
+        cur.execute("SELECT total_usd FROM transactions WHERE notes LIKE 'CDT_CONTRACT_V1:%'")
+        row = cur.fetchone()
+        assert row is not None
+        assert D(str(row[0])) == D("5000")
+    finally:
+        db.close()
+
+
+def test_b52_fund_movement_review_shows_cop_fx_and_usd_converted(gui_env):
+    """Fund movement in COP review must show COP, FX, and USD converted amount."""
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii", "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19", "movement_type": "CONTRIBUTION",
+        "amount": "5000000",
+        "currency": "COP", "fx_rate": "4000",
+        "review": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review Fund Movement" in body
+    assert "5,000,000.00 COP" in body
+    assert "4000" in body
+    # 5_000_000 / 4000 = 1_250
+    assert "1,250.00 USD" in body
+    # cash impact = -1250
+    assert "-1,250.00 USD" in body
+    assert _tx_count(gui_env["db_path"]) == 0
+
+
+def test_b52_fund_movement_review_payload_preserves_currency_and_fx(gui_env):
+    resp = gui_env["client"].post("/add-fund-movement", data={
+        "account": "Trii", "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-19", "movement_type": "CONTRIBUTION",
+        "amount": "5000000",
+        "currency": "COP", "fx_rate": "4000",
+        "review": "1", "next_url": "/operations",
+    })
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert 'name="currency" value="COP"' in body
+    assert 'name="fx_rate" value="4000"' in body
+
+
+def test_b52_fund_withdrawal_review_warns_on_insufficient_balance(gui_env):
+    """Read-only warning when WITHDRAWAL exceeds current fund balance."""
+    client = gui_env["client"]
+    # Seed contribution of 100
+    client.post("/add-fund-movement", data={
+        "account": "Trii", "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-10", "movement_type": "CONTRIBUTION",
+        "amount": "100", "currency": "USD",
+        "confirmed": "1", "next_url": "/operations",
+    })
+    # Review WITHDRAWAL of 500 (exceeds balance of 100)
+    resp = client.post("/add-fund-movement", data={
+        "account": "Trii", "symbol": "FONDO DINAMICO",
+        "movement_date": "2026-04-12", "movement_type": "WITHDRAWAL",
+        "amount": "500", "currency": "USD",
+        "review": "1", "next_url": "/operations",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "exceeds current fund balance" in body
+    # No write yet from the review
+    # (the contribution above is the only persisted row)
+
+
+def test_b52_cash_movement_review_shows_cash_impact(gui_env):
+    """Cash deposit review must show cash impact."""
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "DEPOSIT",
+        "amount": "25000", "review": "1", "next_url": "/",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review Cash Movement" in body
+    assert "25,000.00 USD" in body
+    # cash impact for DEPOSIT = +25000
+    # Withdrawal would be -25000; check sign:
+    assert "Cash impact" in body
+    assert _tx_count(gui_env["db_path"]) == 0
+
+
+def test_b52_cash_movement_withdrawal_review_shows_negative_cash_impact(gui_env):
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "WITHDRAWAL",
+        "amount": "300", "review": "1", "next_url": "/",
+    })
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "-300.00 USD" in body
+
+
+def test_b52_legacy_post_without_flags_still_writes_directly(gui_env):
+    """Regression: a POST without review/confirmed flags writes directly (legacy path)."""
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "DEPOSIT",
+        "amount": "50", "next_url": "/",
+    })
+    assert resp.status_code == 302
+    assert _tx_count(gui_env["db_path"]) == before + 1
+
+
+def test_b52_confirmed_without_review_writes_once(gui_env):
+    """A direct confirmed=1 POST (without going through review first) still writes."""
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "DEPOSIT",
+        "amount": "75", "confirmed": "1", "next_url": "/",
+    })
+    assert resp.status_code == 302
+    assert _tx_count(gui_env["db_path"]) == before + 1
+
+
+def test_b52_review_and_confirmed_both_set_writes_once(gui_env):
+    """If both flags are present, confirmed wins and writes (no extra round-trip)."""
+    before = _tx_count(gui_env["db_path"])
+    resp = gui_env["client"].post("/add-cash-movement", data={
+        "account": "Vanguard",
+        "movement_date": "2026-04-18", "movement_type": "DEPOSIT",
+        "amount": "11", "review": "1", "confirmed": "1", "next_url": "/",
+    })
+    assert resp.status_code == 302
+    assert _tx_count(gui_env["db_path"]) == before + 1
+
+
+def test_b52_transaction_review_payload_preserves_all_fields(gui_env):
+    """All form fields must round-trip in hidden inputs on the review page."""
+    resp = gui_env["client"].post("/add-transaction", data={
+        "side": "SELL", "account": "Kraken", "symbol": "ETH",
+        "tx_date": "2026-02-01", "qty": "0.25", "price": "3000",
+        "fee": "1.5", "notes": "preserve-test",
+        "review": "1", "next_url": "/operations",
+    })
+    # Validation fails on SELL because no holdings — but validation is in record_sell, not _validate_transaction_form.
+    # _validate_transaction_form does not check holdings; review just renders.
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    for k, v in [
+        ("side", "SELL"), ("account", "Kraken"), ("symbol", "ETH"),
+        ("tx_date", "2026-02-01"), ("qty", "0.25"), ("price", "3000"),
+        ("fee", "1.5"), ("notes", "preserve-test"),
+    ]:
+        assert f'name="{k}" value="{v}"' in body, f"Missing hidden input for {k}={v}"

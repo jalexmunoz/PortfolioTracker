@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block page_title %}{{ title }}{% endblock %}
+
+{% block content %}
+
+<div class="panel" style="max-width: 620px;">
+  <div class="panel-title">{{ title }} — Review before saving</div>
+
+  <p class="muted" style="margin-top: 0;">
+    Please review the values below. Nothing has been written to the database yet.
+  </p>
+
+  {% if warning %}
+    <div class="banner banner-warn">
+      <strong>Warning</strong>
+      <span>{{ warning }}</span>
+    </div>
+  {% endif %}
+
+  <table style="width: 100%; border-collapse: collapse; margin: 0.6rem 0 1rem;">
+    <tbody>
+      {% for label, value in summary %}
+        <tr>
+          <th style="text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-soft); color: var(--text-2); font-weight: 500; width: 12rem;">{{ label }}</th>
+          <td style="padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--border-soft);">{{ value }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <form method="post" action="{{ endpoint_url }}"
+        onsubmit="this.querySelector('button[type=submit]').disabled=true">
+    <input type="hidden" name="confirmed" value="1">
+    {% for k, v in raw_payload.items() %}
+      <input type="hidden" name="{{ k }}" value="{{ v }}">
+    {% endfor %}
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
+    <button type="submit">Confirm and Save</button>
+    <button type="button" onclick="history.back()" class="btn btn-secondary">Go Back / Edit</button>
+  </form>
+</div>
+
+{% endblock %}

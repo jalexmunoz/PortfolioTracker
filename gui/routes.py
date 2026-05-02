@@ -108,6 +108,322 @@ def _build_breakdown_rows(s):
 
 
 # ---------------------------------------------------------------------------
+# B52 — Confirmation/review helpers for write operations
+# ---------------------------------------------------------------------------
+
+_TRANSACTION_FIELDS = ("side", "account", "symbol", "tx_date", "qty", "price", "fee", "notes")
+_CDT_FIELDS = (
+    "account", "symbol", "open_date", "maturity_date", "principal", "currency",
+    "fx_rate_at_open", "annual_rate", "term_years", "notes",
+)
+_FUND_FIELDS = (
+    "account", "symbol", "movement_date", "movement_type", "amount",
+    "currency", "fx_rate", "notes",
+)
+_CASH_FIELDS = ("account", "movement_date", "movement_type", "amount", "notes")
+
+
+def _raw_payload(form, fields):
+    return {field: form.get(field, "") for field in fields}
+
+
+def _validate_transaction_form(form):
+    """Parse + validate Add Transaction form. Returns dict or raises ValueError."""
+    side = form.get("side", "").strip().upper()
+    account = form.get("account", "").strip()
+    symbol = form.get("symbol", "").strip().upper()
+    tx_date = form.get("tx_date", "").strip()
+    qty = _parse_decimal(form.get("qty"), "Qty")
+    price = _parse_decimal(form.get("price"), "Unit Price")
+    fee_raw = (form.get("fee", "0") or "0").strip()
+    try:
+        fee_usd = Decimal(fee_raw) if fee_raw else Decimal("0")
+    except InvalidOperation:
+        raise ValueError(f"Fee must be a valid number, got '{fee_raw}'")
+    notes = form.get("notes", "").strip() or None
+
+    if side not in ("BUY", "SELL"):
+        raise ValueError("Side must be BUY or SELL")
+    if not account:
+        raise ValueError("Account is required")
+    if not symbol:
+        raise ValueError("Symbol is required")
+    if qty <= 0:
+        raise ValueError("Qty must be > 0")
+    if price <= 0:
+        raise ValueError("Unit Price must be > 0")
+    if fee_usd < 0:
+        raise ValueError("Fee cannot be negative")
+    if not tx_date:
+        raise ValueError("Transaction date is required")
+
+    return {
+        "side": side, "account": account, "symbol": symbol,
+        "tx_date": tx_date, "qty": qty, "price": price,
+        "fee_usd": fee_usd, "notes": notes,
+    }
+
+
+def _summary_transaction(parsed):
+    qty = parsed["qty"]
+    price = parsed["price"]
+    fee = parsed["fee_usd"]
+    side = parsed["side"]
+    gross = qty * price
+    if side == "BUY":
+        cash_impact = -(gross + fee)
+    else:
+        cash_impact = gross - fee
+    return [
+        ("Date", parsed["tx_date"]),
+        ("Account", parsed["account"]),
+        ("Symbol", parsed["symbol"]),
+        ("Side", side),
+        ("Quantity", _format_qty(qty)),
+        ("Unit Price", f"{_format_money(price)} USD"),
+        ("Fee", f"{_format_money(fee)} USD"),
+        ("Gross amount", f"{_format_money(gross)} USD"),
+        ("Cash impact", f"{_format_money(cash_impact)} USD"),
+        ("Notes", parsed["notes"] or "—"),
+    ]
+
+
+def _validate_cdt_form(form):
+    account = form.get("account", "").strip()
+    symbol = form.get("symbol", "BBVA CDT").strip().upper()
+    open_date = form.get("open_date", "").strip()
+    maturity_date = form.get("maturity_date", "").strip()
+    principal = _parse_decimal(form.get("principal"), "Principal")
+    annual_rate = _parse_decimal(form.get("annual_rate"), "Annual Rate")
+    term_raw = form.get("term_years", "").strip()
+    try:
+        term_years = Decimal(term_raw) if term_raw else None
+    except InvalidOperation:
+        raise ValueError(f"Term in Years must be a valid number, got '{term_raw}'")
+    notes = form.get("notes", "").strip() or None
+    currency = (form.get("currency", "") or "").strip().upper()
+    fx_raw = form.get("fx_rate_at_open", "").strip()
+    try:
+        fx_rate_at_open = Decimal(fx_raw) if fx_raw else None
+    except InvalidOperation:
+        raise ValueError(f"FX Rate at Open must be a valid number, got '{fx_raw}'")
+
+    if not account:
+        raise ValueError("Account is required")
+    if not open_date:
+        raise ValueError("Open date is required")
+    if not maturity_date:
+        raise ValueError("Maturity date is required")
+    if principal <= 0:
+        raise ValueError("Principal must be > 0")
+    if annual_rate < 0:
+        raise ValueError("Annual rate must be >= 0")
+    if maturity_date <= open_date:
+        raise ValueError("Maturity date must be after open date")
+    if currency not in ("USD", "COP"):
+        raise ValueError("Currency must be selected (USD or COP)")
+    if currency != "USD" and fx_rate_at_open is None:
+        raise ValueError(f"FX Rate at Open is required for {currency}")
+    if fx_rate_at_open is not None and fx_rate_at_open <= 0:
+        raise ValueError("FX Rate at Open must be > 0")
+
+    return {
+        "account": account, "symbol": symbol,
+        "open_date": open_date, "maturity_date": maturity_date,
+        "principal": principal, "annual_rate": annual_rate,
+        "term_years": term_years, "notes": notes,
+        "currency": currency, "fx_rate_at_open": fx_rate_at_open,
+    }
+
+
+def _summary_cdt(parsed):
+    principal = parsed["principal"]
+    fx = parsed["fx_rate_at_open"]
+    if parsed["currency"] != "USD" and fx is not None:
+        principal_usd = (principal / fx).quantize(Decimal("0.000001"))
+    else:
+        principal_usd = principal
+    try:
+        d_open = datetime.strptime(parsed["open_date"], "%Y-%m-%d").date()
+        d_mat = datetime.strptime(parsed["maturity_date"], "%Y-%m-%d").date()
+        derived_term = (
+            Decimal(str((d_mat - d_open).days)) / Decimal("365")
+        ).quantize(Decimal("0.00000001"))
+    except ValueError:
+        derived_term = None
+
+    rows = [
+        ("Account", parsed["account"]),
+        ("Symbol", parsed["symbol"]),
+        ("Open Date", parsed["open_date"]),
+        ("Maturity Date", parsed["maturity_date"]),
+        ("Principal", f"{_format_money(principal)} {parsed['currency']}"),
+        ("Currency", parsed["currency"]),
+    ]
+    if parsed["currency"] != "USD":
+        rows.append(("FX Rate at Open", f"{fx} {parsed['currency']} per USD"))
+        rows.append(("Principal (USD)", f"{_format_money(principal_usd)} USD"))
+    rows.append(("Annual Rate", str(parsed["annual_rate"])))
+    if parsed["term_years"] is not None:
+        rows.append(("Term Input (years)", str(parsed["term_years"])))
+    if derived_term is not None:
+        rows.append(("Term Derived (years)", str(derived_term)))
+    rows.append(("Cash impact", f"{_format_money(-principal_usd)} USD"))
+    rows.append(("Notes", parsed["notes"] or "—"))
+    return rows
+
+
+def _validate_fund_movement_form(form):
+    account = form.get("account", "").strip()
+    symbol = form.get("symbol", "").strip().upper()
+    movement_date = form.get("movement_date", "").strip()
+    movement_type = form.get("movement_type", "").strip().upper()
+    amount = _parse_decimal(form.get("amount"), "Amount")
+    notes = form.get("notes", "").strip() or None
+    currency = (form.get("currency", "") or "").strip().upper()
+    fx_raw = form.get("fx_rate", "").strip()
+    try:
+        fx_rate = Decimal(fx_raw) if fx_raw else None
+    except InvalidOperation:
+        raise ValueError(f"FX Rate must be a valid number, got '{fx_raw}'")
+
+    if not account:
+        raise ValueError("Account is required")
+    if not symbol:
+        raise ValueError("Symbol is required")
+    if not movement_date:
+        raise ValueError("Date is required")
+    if movement_type not in ("CONTRIBUTION", "WITHDRAWAL"):
+        raise ValueError("Movement type must be CONTRIBUTION or WITHDRAWAL")
+    if amount <= 0:
+        raise ValueError("Amount must be > 0")
+    if currency not in ("USD", "COP"):
+        raise ValueError("Currency must be selected (USD or COP)")
+    if currency != "USD" and fx_rate is None:
+        raise ValueError(f"FX Rate is required for {currency}")
+    if fx_rate is not None and fx_rate <= 0:
+        raise ValueError("FX Rate must be > 0")
+
+    return {
+        "account": account, "symbol": symbol,
+        "movement_date": movement_date, "movement_type": movement_type,
+        "amount": amount, "notes": notes,
+        "currency": currency, "fx_rate": fx_rate,
+    }
+
+
+def _summary_fund_movement(parsed):
+    amount = parsed["amount"]
+    fx = parsed["fx_rate"]
+    if parsed["currency"] != "USD" and fx is not None:
+        amount_usd = (amount / fx).quantize(Decimal("0.000001"))
+    else:
+        amount_usd = amount
+    cash_impact = (
+        -amount_usd if parsed["movement_type"] == "CONTRIBUTION" else amount_usd
+    )
+    rows = [
+        ("Account", parsed["account"]),
+        ("Symbol", parsed["symbol"]),
+        ("Date", parsed["movement_date"]),
+        ("Movement Type", parsed["movement_type"]),
+        ("Amount", f"{_format_money(amount)} {parsed['currency']}"),
+        ("Currency", parsed["currency"]),
+    ]
+    if parsed["currency"] != "USD":
+        rows.append(("FX Rate", f"{fx} {parsed['currency']} per USD"))
+        rows.append(("Amount (USD)", f"{_format_money(amount_usd)} USD"))
+    rows.append(("Cash impact", f"{_format_money(cash_impact)} USD"))
+    rows.append(("Notes", parsed["notes"] or "—"))
+    return rows
+
+
+def _fund_balance_warning(active, parsed):
+    """Read-only check: warn if WITHDRAWAL would exceed current fund balance.
+
+    Returns None silently on any DB issue; the service still validates on save.
+    """
+    if parsed["movement_type"] != "WITHDRAWAL":
+        return None
+    if parsed["currency"] == "USD" or parsed["fx_rate"] is None:
+        amount_usd = parsed["amount"]
+    else:
+        amount_usd = (parsed["amount"] / parsed["fx_rate"]).quantize(Decimal("0.000001"))
+    try:
+        from portfolio_tracker_v2.core import Database
+        db = Database(active.db_path)
+        try:
+            cursor = db.connect().cursor()
+            cursor.execute("SELECT id FROM assets WHERE symbol = ?", (parsed["symbol"],))
+            asset_row = cursor.fetchone()
+            if not asset_row:
+                return None
+            cursor.execute("SELECT id FROM accounts WHERE name = ?", (parsed["account"],))
+            acc_row = cursor.fetchone()
+            if not acc_row:
+                return None
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN tx_type IN ('BUY', 'MIGRATION_BUY') THEN total_usd ELSE 0 END), 0)
+                  - COALESCE(SUM(CASE WHEN tx_type = 'SELL' THEN total_usd ELSE 0 END), 0)
+                FROM transactions
+                WHERE asset_id = ? AND account_id = ?
+                """,
+                (asset_row[0], acc_row[0]),
+            )
+            balance = Decimal(str(cursor.fetchone()[0] or 0))
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+    if amount_usd > balance:
+        return (
+            f"Withdrawal of {_format_money(amount_usd)} USD exceeds current fund "
+            f"balance of {_format_money(balance)} USD. The save will be rejected."
+        )
+    return None
+
+
+def _validate_cash_movement_form(form):
+    account = form.get("account", "").strip()
+    movement_date = form.get("movement_date", "").strip()
+    movement_type = form.get("movement_type", "").strip().upper()
+    amount = _parse_decimal(form.get("amount"), "Amount")
+    notes = form.get("notes", "").strip() or None
+
+    if not account:
+        raise ValueError("Account is required")
+    if not movement_date:
+        raise ValueError("Date is required")
+    if movement_type not in ("DEPOSIT", "WITHDRAWAL"):
+        raise ValueError("Movement type must be DEPOSIT or WITHDRAWAL")
+    if amount <= 0:
+        raise ValueError("Amount must be > 0")
+
+    return {
+        "account": account, "movement_date": movement_date,
+        "movement_type": movement_type, "amount": amount,
+        "notes": notes,
+    }
+
+
+def _summary_cash_movement(parsed):
+    amount = parsed["amount"]
+    cash_impact = amount if parsed["movement_type"] == "DEPOSIT" else -amount
+    return [
+        ("Account", parsed["account"]),
+        ("Date", parsed["movement_date"]),
+        ("Movement Type", parsed["movement_type"]),
+        ("Amount", f"{_format_money(amount)} USD"),
+        ("Currency", "USD"),
+        ("Cash impact", f"{_format_money(cash_impact)} USD"),
+        ("Notes", parsed["notes"] or "—"),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # H3 — Dashboard (home)
 # ---------------------------------------------------------------------------
 
@@ -406,49 +722,44 @@ def add_transaction():
         return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
         try:
-            side = request.form.get("side", "").strip().upper()
-            account = request.form.get("account", "").strip()
-            symbol = request.form.get("symbol", "").strip().upper()
-            tx_date_str = request.form.get("tx_date", "").strip()
-            qty = _parse_decimal(request.form.get("qty"), "Qty")
-            price = _parse_decimal(request.form.get("price"), "Unit Price")
-            fee_raw = request.form.get("fee", "0").strip()
-            fee_usd = Decimal(fee_raw) if fee_raw else Decimal("0")
-            notes = request.form.get("notes", "").strip() or None
+            parsed = _validate_transaction_form(request.form)
 
-            if side not in ("BUY", "SELL"):
-                raise ValueError("Side must be BUY or SELL")
-            if not account:
-                raise ValueError("Account is required")
-            if not symbol:
-                raise ValueError("Symbol is required")
-            if qty <= 0:
-                raise ValueError("Qty must be > 0")
-            if price <= 0:
-                raise ValueError("Unit Price must be > 0")
-            if fee_usd < 0:
-                raise ValueError("Fee cannot be negative")
-            if not tx_date_str:
-                raise ValueError("Transaction date is required")
+            if review_mode:
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review Transaction",
+                    summary=_summary_transaction(parsed),
+                    raw_payload=_raw_payload(request.form, _TRANSACTION_FIELDS),
+                    endpoint_url=url_for("gui.add_transaction"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=None,
+                )
 
-            db, resolver, tx_svc, _ = _get_db_and_services(active)
+            db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
             try:
-                if side == "BUY":
+                if parsed["side"] == "BUY":
                     tx_id = tx_svc.record_buy(
-                        symbol=symbol, account=account, qty=qty,
-                        unit_price=price, fee_usd=fee_usd,
-                        tx_date=tx_date_str, notes=notes,
+                        symbol=parsed["symbol"], account=parsed["account"],
+                        qty=parsed["qty"], unit_price=parsed["price"],
+                        fee_usd=parsed["fee_usd"], tx_date=parsed["tx_date"],
+                        notes=parsed["notes"],
                     )
                 else:
                     tx_id = tx_svc.record_sell(
-                        symbol=symbol, account=account, qty=qty,
-                        unit_price=price, fee_usd=fee_usd,
-                        tx_date=tx_date_str, notes=notes,
+                        symbol=parsed["symbol"], account=parsed["account"],
+                        qty=parsed["qty"], unit_price=parsed["price"],
+                        fee_usd=parsed["fee_usd"], tx_date=parsed["tx_date"],
+                        notes=parsed["notes"],
                     )
-                flash(f"OK: {side} recorded, tx_id={tx_id}", "success")
+                flash(f"OK: {parsed['side']} recorded, tx_id={tx_id}", "success")
             except InvalidTransaction as exc:
                 flash(f"Transaction error: {exc}", "error")
             finally:
@@ -474,61 +785,52 @@ def add_cdt():
         return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
         try:
-            account = request.form.get("account", "").strip()
-            symbol = request.form.get("symbol", "BBVA CDT").strip().upper()
-            open_date = request.form.get("open_date", "").strip()
-            maturity_date = request.form.get("maturity_date", "").strip()
-            principal = _parse_decimal(request.form.get("principal"), "Principal")
-            annual_rate = _parse_decimal(request.form.get("annual_rate"), "Annual Rate")
-            term_raw = request.form.get("term_years", "").strip()
-            term_years = Decimal(term_raw) if term_raw else None
-            notes = request.form.get("notes", "").strip() or None
-            currency = (request.form.get("currency", "") or "").strip().upper()
-            fx_raw = request.form.get("fx_rate_at_open", "").strip()
-            fx_rate_at_open = Decimal(fx_raw) if fx_raw else None
+            parsed = _validate_cdt_form(request.form)
 
-            if not account:
-                raise ValueError("Account is required")
-            if not open_date:
-                raise ValueError("Open date is required")
-            if not maturity_date:
-                raise ValueError("Maturity date is required")
-            if principal <= 0:
-                raise ValueError("Principal must be > 0")
-            if annual_rate < 0:
-                raise ValueError("Annual rate must be >= 0")
-            if maturity_date <= open_date:
-                raise ValueError("Maturity date must be after open date")
-            if currency not in ("USD", "COP"):
-                raise ValueError("Currency must be selected (USD or COP)")
-            if currency != "USD" and fx_rate_at_open is None:
-                raise ValueError(f"FX Rate at Open is required for {currency}")
-            if fx_rate_at_open is not None and fx_rate_at_open <= 0:
-                raise ValueError("FX Rate at Open must be > 0")
+            if review_mode:
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review CDT Contract",
+                    summary=_summary_cdt(parsed),
+                    raw_payload=_raw_payload(request.form, _CDT_FIELDS),
+                    endpoint_url=url_for("gui.add_cdt"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=None,
+                )
 
-            db, resolver, tx_svc, _ = _get_db_and_services(active)
+            db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
             try:
                 tx_id = tx_svc.record_cdt(
-                    account=account,
-                    symbol=symbol,
-                    open_date=open_date,
-                    maturity_date=maturity_date,
-                    principal=principal,
-                    term_years=term_years,
-                    annual_rate=annual_rate,
-                    notes=notes,
-                    currency=currency,
-                    fx_rate_at_open=fx_rate_at_open,
+                    account=parsed["account"],
+                    symbol=parsed["symbol"],
+                    open_date=parsed["open_date"],
+                    maturity_date=parsed["maturity_date"],
+                    principal=parsed["principal"],
+                    term_years=parsed["term_years"],
+                    annual_rate=parsed["annual_rate"],
+                    notes=parsed["notes"],
+                    currency=parsed["currency"],
+                    fx_rate_at_open=parsed["fx_rate_at_open"],
                 )
-                detail = f"principal={_format_money(principal)} {currency}"
-                if currency != "USD":
-                    principal_usd = (principal / fx_rate_at_open).quantize(Decimal("0.000001"))
-                    detail += f" (fx={fx_rate_at_open} → {_format_money(principal_usd)} USD)"
+                detail = f"principal={_format_money(parsed['principal'])} {parsed['currency']}"
+                if parsed["currency"] != "USD":
+                    principal_usd = (
+                        parsed["principal"] / parsed["fx_rate_at_open"]
+                    ).quantize(Decimal("0.000001"))
+                    detail += (
+                        f" (fx={parsed['fx_rate_at_open']} → "
+                        f"{_format_money(principal_usd)} USD)"
+                    )
                 flash(
-                    f"OK: CDT recorded, tx_id={tx_id}, {detail}, rate={annual_rate}",
+                    f"OK: CDT recorded, tx_id={tx_id}, {detail}, rate={parsed['annual_rate']}",
                     "success",
                 )
             except InvalidTransaction as exc:
@@ -556,36 +858,39 @@ def add_cash_movement():
         return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
         try:
-            account = request.form.get("account", "").strip()
-            movement_date = request.form.get("movement_date", "").strip()
-            movement_type = request.form.get("movement_type", "").strip().upper()
-            amount = _parse_decimal(request.form.get("amount"), "Amount")
-            notes = request.form.get("notes", "").strip() or None
+            parsed = _validate_cash_movement_form(request.form)
 
-            if not account:
-                raise ValueError("Account is required")
-            if not movement_date:
-                raise ValueError("Date is required")
-            if movement_type not in ("DEPOSIT", "WITHDRAWAL"):
-                raise ValueError("Movement type must be DEPOSIT or WITHDRAWAL")
-            if amount <= 0:
-                raise ValueError("Amount must be > 0")
+            if review_mode:
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review Cash Movement",
+                    summary=_summary_cash_movement(parsed),
+                    raw_payload=_raw_payload(request.form, _CASH_FIELDS),
+                    endpoint_url=url_for("gui.add_cash_movement"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=None,
+                )
 
-            db, resolver, tx_svc, _ = _get_db_and_services(active)
+            db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
             try:
                 tx_id = tx_svc.record_cash_movement(
-                    account=account,
-                    movement_date=movement_date,
-                    amount=amount,
-                    movement_type=movement_type,
-                    notes=notes,
+                    account=parsed["account"],
+                    movement_date=parsed["movement_date"],
+                    amount=parsed["amount"],
+                    movement_type=parsed["movement_type"],
+                    notes=parsed["notes"],
                 )
                 flash(
-                    f"OK: {movement_type} recorded, tx_id={tx_id}, "
-                    f"amount={_format_money(amount)}",
+                    f"OK: {parsed['movement_type']} recorded, tx_id={tx_id}, "
+                    f"amount={_format_money(parsed['amount'])}",
                     "success",
                 )
             except InvalidTransaction as exc:
@@ -646,54 +951,50 @@ def add_fund_movement():
         return redirect(url_for("gui.setup"))
 
     if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
         try:
-            account = request.form.get("account", "").strip()
-            symbol = request.form.get("symbol", "").strip().upper()
-            movement_date = request.form.get("movement_date", "").strip()
-            movement_type = request.form.get("movement_type", "").strip().upper()
-            amount = _parse_decimal(request.form.get("amount"), "Amount")
-            notes = request.form.get("notes", "").strip() or None
-            currency = (request.form.get("currency", "") or "").strip().upper()
-            fx_raw = request.form.get("fx_rate", "").strip()
-            fx_rate = Decimal(fx_raw) if fx_raw else None
+            parsed = _validate_fund_movement_form(request.form)
 
-            if not account:
-                raise ValueError("Account is required")
-            if not symbol:
-                raise ValueError("Symbol is required")
-            if not movement_date:
-                raise ValueError("Date is required")
-            if movement_type not in ("CONTRIBUTION", "WITHDRAWAL"):
-                raise ValueError("Movement type must be CONTRIBUTION or WITHDRAWAL")
-            if amount <= 0:
-                raise ValueError("Amount must be > 0")
-            if currency not in ("USD", "COP"):
-                raise ValueError("Currency must be selected (USD or COP)")
-            if currency != "USD" and fx_rate is None:
-                raise ValueError(f"FX Rate is required for {currency}")
-            if fx_rate is not None and fx_rate <= 0:
-                raise ValueError("FX Rate must be > 0")
+            if review_mode:
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review Fund Movement",
+                    summary=_summary_fund_movement(parsed),
+                    raw_payload=_raw_payload(request.form, _FUND_FIELDS),
+                    endpoint_url=url_for("gui.add_fund_movement"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=_fund_balance_warning(active, parsed),
+                )
 
-            db, resolver, tx_svc, _ = _get_db_and_services(active)
+            db, _resolver, tx_svc, _pnl = _get_db_and_services(active)
             from portfolio_tracker_v2.core.exceptions import InvalidTransaction
 
             try:
                 tx_id = tx_svc.record_fund_movement(
-                    account=account,
-                    symbol=symbol,
-                    movement_date=movement_date,
-                    amount=amount,
-                    movement_type=movement_type,
-                    notes=notes,
-                    currency=currency,
-                    fx_rate=fx_rate,
+                    account=parsed["account"],
+                    symbol=parsed["symbol"],
+                    movement_date=parsed["movement_date"],
+                    amount=parsed["amount"],
+                    movement_type=parsed["movement_type"],
+                    notes=parsed["notes"],
+                    currency=parsed["currency"],
+                    fx_rate=parsed["fx_rate"],
                 )
-                detail = f"amount={_format_money(amount)} {currency}"
-                if currency != "USD":
-                    amount_usd = (amount / fx_rate).quantize(Decimal("0.000001"))
-                    detail += f" (fx={fx_rate} → {_format_money(amount_usd)} USD)"
+                detail = f"amount={_format_money(parsed['amount'])} {parsed['currency']}"
+                if parsed["currency"] != "USD":
+                    amount_usd = (
+                        parsed["amount"] / parsed["fx_rate"]
+                    ).quantize(Decimal("0.000001"))
+                    detail += (
+                        f" (fx={parsed['fx_rate']} → "
+                        f"{_format_money(amount_usd)} USD)"
+                    )
                 flash(
-                    f"OK: {movement_type} recorded, tx_id={tx_id}, {detail}",
+                    f"OK: {parsed['movement_type']} recorded, tx_id={tx_id}, {detail}",
                     "success",
                 )
             except InvalidTransaction as exc:

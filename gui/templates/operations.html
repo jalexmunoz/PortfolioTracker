@@ -24,6 +24,7 @@
     <p>Record a market transaction. Cash ledger is updated automatically.</p>
     <form method="post" action="{{ url_for('gui.add_transaction') }}">
       <input type="hidden" name="next_url" value="{{ next_url }}">
+      <input type="hidden" name="review" value="1">
 
       <label for="op_side">Side</label>
       <select id="op_side" name="side" required>
@@ -52,7 +53,7 @@
       <label for="op_notes">Notes (optional)</label>
       <input type="text" id="op_notes" name="notes">
 
-      <button type="submit" {% if active is none %}disabled{% endif %}>Record Transaction</button>
+      <button type="submit" {% if active is none %}disabled{% endif %}>Continue / Review</button>
     </form>
   </div>
 
@@ -62,6 +63,7 @@
     <p>Register a fixed-term deposit. Settlement and interest are handled separately.</p>
     <form method="post" action="{{ url_for('gui.add_cdt') }}">
       <input type="hidden" name="next_url" value="{{ next_url }}">
+      <input type="hidden" name="review" value="1">
 
       <label for="cdt_account">Account</label>
       <input type="text" id="cdt_account" name="account" required placeholder="BBVA">
@@ -87,7 +89,7 @@
       <label for="cdt_notes">Notes (optional)</label>
       <input type="text" id="cdt_notes" name="notes">
 
-      <button type="submit" {% if active is none %}disabled{% endif %}>Record CDT</button>
+      <button type="submit" {% if active is none %}disabled{% endif %}>Continue / Review</button>
     </form>
   </div>
 
@@ -97,6 +99,7 @@
     <p>Manual cash movement. Moves cash only — no position, no PnL.</p>
     <form method="post" action="{{ url_for('gui.add_cash_movement') }}">
       <input type="hidden" name="next_url" value="{{ next_url }}">
+      <input type="hidden" name="review" value="1">
 
       <label for="cm_account">Account</label>
       <input type="text" id="cm_account" name="account" required placeholder="Vanguard">
@@ -116,7 +119,7 @@
       <label for="cm_notes">Notes (optional)</label>
       <input type="text" id="cm_notes" name="notes">
 
-      <button type="submit" {% if active is none %}disabled{% endif %}>Record Cash Movement</button>
+      <button type="submit" {% if active is none %}disabled{% endif %}>Continue / Review</button>
     </form>
   </div>
 
@@ -126,6 +129,7 @@
     <p>Contribution to a fund moves cash out; withdrawal moves cash in. Amount always positive.</p>
     <form method="post" action="{{ url_for('gui.add_fund_movement') }}">
       <input type="hidden" name="next_url" value="{{ next_url }}">
+      <input type="hidden" name="review" value="1">
 
       <label for="fm_account">Account</label>
       <input type="text" id="fm_account" name="account" required placeholder="Binance">
@@ -148,7 +152,7 @@
       <label for="fm_notes">Notes (optional)</label>
       <input type="text" id="fm_notes" name="notes">
 
-      <button type="submit" {% if active is none %}disabled{% endif %}>Record Fund Movement</button>
+      <button type="submit" {% if active is none %}disabled{% endif %}>Continue / Review</button>
     </form>
   </div>
 
