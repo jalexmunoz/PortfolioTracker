@@ -53,12 +53,16 @@ TRADINGVIEW_STOCK_INTL_MAP = {
 TRADINGVIEW_US_ETF_MAP = {
     "GLD": {"tradingview_symbol": "GLD", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
     "SLV": {"tradingview_symbol": "SLV", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
+    "VOO": {"tradingview_symbol": "VOO", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
+    "SHLD": {"tradingview_symbol": "SHLD", "exchange": "AMEX", "currency": "USD", "divisor": 1.0},
 }
 
 # US stocks routed through TradingView instead of Alpha Vantage.
 # GOOG: AV free-tier quota is unreliable; TradingView NASDAQ is the preferred source.
+# RCL: NYSE-listed; TradingView NYSE is the preferred source.
 TRADINGVIEW_US_STOCK_MAP = {
     "GOOG": {"tradingview_symbol": "GOOG", "exchange": "NASDAQ", "currency": "USD", "divisor": 1.0},
+    "RCL": {"tradingview_symbol": "RCL", "exchange": "NYSE", "currency": "USD", "divisor": 1.0},
 }
 
 

@@ -668,3 +668,147 @@ def test_refresh_prices_usdt_stablecoin_peg(db):
     row = cursor.fetchone()
     assert row[0] == pytest.approx(1.0)
     assert row[1] == "stablecoin_peg"
+
+
+# --- B58: infer market metadata for supported new assets ---
+
+def test_resolve_provider_rcl_routes_to_tradingview_nyse():
+    resolution = resolve_provider('RCL', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'tradingview'
+    assert resolution.provider_symbol == 'RCL'
+    assert resolution.exchange == 'NYSE'
+
+
+def test_resolve_provider_shld_routes_to_tradingview_amex():
+    resolution = resolve_provider('SHLD', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'tradingview'
+    assert resolution.provider_symbol == 'SHLD'
+    assert resolution.exchange == 'AMEX'
+    assert resolution.price_source == 'tradingview_amex_etf'
+
+
+def test_resolve_provider_voo_routes_to_tradingview_amex():
+    resolution = resolve_provider('VOO', 'stock_us')
+    assert resolution.status == 'ok'
+    assert resolution.provider == 'tradingview'
+    assert resolution.provider_symbol == 'VOO'
+    assert resolution.exchange == 'AMEX'
+    assert resolution.price_source == 'tradingview_amex_etf'
+
+
+def test_asset_resolver_creates_voo_as_stock_us_market_live(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('VOO')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_creates_rcl_as_stock_us_market_live(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('RCL')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_creates_shld_as_stock_us_market_live(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('SHLD')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_heals_rcl_unknown_to_stock_us(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO assets (symbol, asset_type, is_active, valuation_method) VALUES ('RCL', 'UNKNOWN', 1, 'unvalued')"
+    )
+    conn.commit()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('RCL')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_heals_shld_unknown_to_stock_us(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO assets (symbol, asset_type, is_active, valuation_method) VALUES ('SHLD', 'UNKNOWN', 1, 'unvalued')"
+    )
+    conn.commit()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('SHLD')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_asset_resolver_heals_voo_unknown_to_stock_us(db):
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO assets (symbol, asset_type, is_active, valuation_method) VALUES ('VOO', 'UNKNOWN', 1, 'unvalued')"
+    )
+    conn.commit()
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('VOO')
+    assert asset['asset_type'] == 'stock_us'
+    assert asset['valuation_method'] == 'market_live'
+
+
+def test_refresh_prices_rcl_uses_tradingview_nyse(db):
+    add_active_holding(db, 'RCL', 'stock_us')
+
+    filled_df = pd.DataFrame([{"open": 148.0, "high": 150.0, "low": 147.5, "close": 149.2, "volume": 1.0}])
+    with patch("portfolio_tracker_v2.services.tradingview_fetcher.get_tradingview_ohlc") as mock_tv:
+        mock_tv.return_value = filled_df
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "tradingview"
+    assert report.results[0].provider_symbol == "RCL"
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, exchange FROM assets WHERE symbol = 'RCL'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(149.2)
+    assert row[1] == "NYSE"
+
+
+def test_refresh_prices_shld_uses_tradingview_amex(db):
+    add_active_holding(db, 'SHLD', 'stock_us')
+
+    filled_df = pd.DataFrame([{"open": 38.0, "high": 38.5, "low": 37.8, "close": 38.2, "volume": 1.0}])
+    with patch("portfolio_tracker_v2.services.tradingview_fetcher.get_tradingview_ohlc") as mock_tv:
+        mock_tv.return_value = filled_df
+        report = refresh_prices(db)
+
+    assert report.updated == 1
+    assert report.failed_final == 0
+    assert report.results[0].provider == "tradingview"
+    assert report.results[0].provider_symbol == "SHLD"
+
+    conn = db.connect()
+    cursor = conn.cursor()
+    cursor.execute("SELECT current_price, price_source FROM assets WHERE symbol = 'SHLD'")
+    row = cursor.fetchone()
+    assert row[0] == pytest.approx(38.2)
+    assert row[1] == "tradingview_amex_etf"
+
+
+def test_asset_resolver_fund_name_stays_unknown_unvalued(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('FONDO ACCIVAL')
+    assert asset['asset_type'] == 'UNKNOWN'
+    assert asset['valuation_method'] == 'unvalued'
+
+
+def test_asset_resolver_unknown_symbol_stays_unknown_unvalued(db):
+    resolver = AssetResolver(db)
+    asset = resolver.resolve('XYZUNKNOWN99')
+    assert asset['asset_type'] == 'UNKNOWN'
+    assert asset['valuation_method'] == 'unvalued'

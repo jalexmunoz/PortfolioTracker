@@ -102,6 +102,13 @@ class AssetResolver:
         'CVX': 'stock_us',
         'CEG': 'stock_us',
         
+        # US ETFs (additional)
+        'VOO': 'stock_us',   # Vanguard S&P 500 ETF
+        'SHLD': 'stock_us',  # Global X Defense Tech ETF
+
+        # US Stocks (additional)
+        'RCL': 'stock_us',   # Royal Caribbean Group
+
         # International Stocks
         'ECOPETROL': 'stock_intl',
         'EC': 'stock_intl',
@@ -183,7 +190,7 @@ class AssetResolver:
         
         if asset:
             if asset['asset_type'] == 'UNKNOWN':
-                known_type = self._hardcoded_type(symbol_resolved)
+                known_type = self._infer_asset_type(symbol_resolved)
                 if known_type:
                     new_method = self._default_valuation_method(symbol_resolved, known_type)
                     self.db.execute(
@@ -193,8 +200,8 @@ class AssetResolver:
                     asset = self._get_asset_internal(symbol_resolved)
             return asset
         
-        # Auto-create with UNKNOWN type
-        asset_type = self._hardcoded_type(symbol_resolved) or 'UNKNOWN'
+        # Auto-create with inferred or UNKNOWN type
+        asset_type = self._infer_asset_type(symbol_resolved) or 'UNKNOWN'
         tv_symbol, exchange = self.TRADINGVIEW_MAP.get(symbol_resolved, (None, None))
         
         return self._create_asset(
@@ -283,6 +290,29 @@ class AssetResolver:
     def _hardcoded_type(self, symbol: str) -> Optional[str]:
         """Get hardcoded asset type for symbol, if known."""
         return self.HARDCODED_TYPES.get(symbol)
+
+    def _infer_asset_type(self, symbol: str) -> Optional[str]:
+        """Infer asset type: HARDCODED_TYPES first, then price_svc provider maps.
+
+        Lazy import of price_svc avoids circular dependency
+        (services.price_svc imports core.Database at top level).
+        """
+        known = self.HARDCODED_TYPES.get(symbol)
+        if known:
+            return known
+        from portfolio_tracker_v2.services.price_svc import (
+            TRADINGVIEW_US_ETF_MAP,
+            TRADINGVIEW_US_STOCK_MAP,
+            TRADINGVIEW_COMMODITY_MAP,
+            TRADINGVIEW_STOCK_INTL_MAP,
+        )
+        if symbol in TRADINGVIEW_US_ETF_MAP or symbol in TRADINGVIEW_US_STOCK_MAP:
+            return 'stock_us'
+        if symbol in TRADINGVIEW_COMMODITY_MAP:
+            return 'commodity'
+        if symbol in TRADINGVIEW_STOCK_INTL_MAP:
+            return 'stock_intl'
+        return None
     
     def _get_asset_internal(self, symbol: str) -> Optional[Dict]:
         """
