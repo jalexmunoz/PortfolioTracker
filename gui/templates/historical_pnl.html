@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block page_title %}Historical PnL Adjustments{% endblock %}
+
+{% block content %}
+
+<div class="panel">
+  <div class="panel-title">Historical Realized PnL Adjustments</div>
+  <p class="muted">
+    Record prior realized gains or losses (e.g. closed investments from another broker) that count toward
+    your lifetime realized PnL without affecting cash balance, open positions, or total equity.
+  </p>
+</div>
+
+{# ---- Add adjustment form ---- #}
+<div class="panel" style="max-width: 560px;">
+  <div class="panel-title">Add Adjustment</div>
+
+  <form method="post" action="{{ url_for('gui.historical_pnl') }}">
+    <input type="hidden" name="review" value="1">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+
+    <label for="adjustment_date">Date (YYYY-MM-DD)</label>
+    <input id="adjustment_date" name="adjustment_date" type="text" required
+           placeholder="2025-12-31">
+
+    <label for="source">Source</label>
+    <input id="source" name="source" type="text" required
+           placeholder="Vanguard historical 2022-2025">
+
+    <label for="amount_usd">Amount USD</label>
+    <input id="amount_usd" name="amount_usd" type="text" required
+           placeholder="12025.08">
+    <small class="muted">Use negative values for realized losses.</small>
+
+    <label for="description">Description</label>
+    <input id="description" name="description" type="text"
+           placeholder="Prior closed Vanguard investments, dividends, VMFXX interest and advisor fee">
+
+    <button type="submit">Review before saving</button>
+  </form>
+</div>
+
+{# ---- Existing adjustments ---- #}
+<div class="panel">
+  <div class="panel-title-row">
+    <span class="panel-title">Existing Adjustments</span>
+    {% if total_adjustment and total_adjustment != 0 %}
+      <span class="muted" style="font-size: 0.82rem;">
+        Total: <strong>{{ format_money(total_adjustment) }} USD</strong>
+      </span>
+    {% endif %}
+  </div>
+
+  {% if adjustments %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Date</th>
+            <th>Source</th>
+            <th>Description</th>
+            <th class="num">Amount USD</th>
+            <th>Recorded At</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in adjustments %}
+          <tr>
+            <td>{{ a.id }}</td>
+            <td>{{ a.adjustment_date }}</td>
+            <td>{{ a.source }}</td>
+            <td>{{ a.description or '—' }}</td>
+            <td class="num {{ 'value-pos' if a.amount_usd > 0 else 'value-neg' }}">
+              {{ format_money(a.amount_usd) }}
+            </td>
+            <td class="muted" style="font-size: 0.8rem;">{{ a.created_at }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">No historical PnL adjustments recorded yet.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

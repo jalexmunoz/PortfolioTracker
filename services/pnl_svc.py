@@ -508,6 +508,60 @@ class PnLService:
 
         return results
 
+    def add_historical_realized_pnl_adjustment(
+        self,
+        adjustment_date: str,
+        source: str,
+        description: Optional[str],
+        amount_usd: Decimal,
+    ) -> int:
+        self.db._ensure_historical_pnl_schema()
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO historical_realized_pnl_adjustments
+                (adjustment_date, source, description, amount_usd)
+            VALUES (?, ?, ?, ?)
+            """,
+            (adjustment_date, source, description, float(amount_usd)),
+        )
+        self.db.commit()
+        return cursor.lastrowid
+
+    def list_historical_realized_pnl_adjustments(self) -> list:
+        self.db._ensure_historical_pnl_schema()
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, adjustment_date, source, description, amount_usd, created_at
+            FROM historical_realized_pnl_adjustments
+            ORDER BY adjustment_date DESC, id DESC
+            """
+        )
+        return [
+            {
+                'id': row[0],
+                'adjustment_date': row[1],
+                'source': row[2],
+                'description': row[3],
+                'amount_usd': Decimal(str(row[4])),
+                'created_at': row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def sum_historical_realized_pnl_adjustments(self) -> Decimal:
+        self.db._ensure_historical_pnl_schema()
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COALESCE(SUM(amount_usd), 0) FROM historical_realized_pnl_adjustments"
+        )
+        result = cursor.fetchone()[0]
+        return Decimal(str(result))
+
     def cash_balance(self, account: Optional[str] = None) -> Decimal:
         conn = self.db.connect()
         cursor = conn.cursor()
@@ -572,6 +626,8 @@ class PnLService:
         }
 
         total_realized = self.realized_pnl(account=account)
+        historical_realized = self.sum_historical_realized_pnl_adjustments()
+        displayed_realized = total_realized + historical_realized
 
         for p in positions:
             total_cost_basis += p['cost_basis']
@@ -608,6 +664,8 @@ class PnLService:
         return {
             'total_cost_basis': total_cost_basis,
             'total_realized_pnl': total_realized,
+            'historical_realized_pnl': historical_realized,
+            'displayed_realized_pnl': displayed_realized,
             'cash_balance': cash,
             'total_equity': total_equity,
             'market_covered_value': market_covered_value,

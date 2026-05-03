@@ -157,11 +157,21 @@ class Database:
         );
         CREATE INDEX IF NOT EXISTS idx_cash_ledger_account ON cash_ledger(account_id, id DESC);
         CREATE INDEX IF NOT EXISTS idx_cash_ledger_tx ON cash_ledger(tx_id);
+
+        CREATE TABLE IF NOT EXISTS historical_realized_pnl_adjustments (
+            id INTEGER PRIMARY KEY,
+            adjustment_date TEXT NOT NULL,
+            source TEXT NOT NULL,
+            description TEXT,
+            amount_usd REAL NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
         """
 
         try:
             self.conn.executescript(schema_sql)
             self._ensure_assets_schema_extensions()
+            self._ensure_historical_pnl_schema()
             self.commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Schema initialization failed: {e}")
@@ -185,3 +195,20 @@ class Database:
         )
         self.conn.execute("UPDATE assets SET valuation_method = 'unvalued' WHERE valuation_method IS NULL OR valuation_method = ''")
         self.conn.execute("UPDATE assets SET is_active = 0 WHERE symbol IN ('BAS', 'SWTCH')")
+
+    def _ensure_historical_pnl_schema(self) -> None:
+        """Create historical_realized_pnl_adjustments table if missing. Safe migration for existing DBs."""
+        conn = self.connect()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS historical_realized_pnl_adjustments (
+                id INTEGER PRIMARY KEY,
+                adjustment_date TEXT NOT NULL,
+                source TEXT NOT NULL,
+                description TEXT,
+                amount_usd REAL NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()

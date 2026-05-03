@@ -124,7 +124,11 @@ def _format_last_refresh(ts) -> str:
 
 
 def _compute_total_pnl(summary: dict) -> Decimal:
-    realized = Decimal(str(summary.get("total_realized_pnl", 0) or 0))
+    realized = Decimal(str(
+        summary.get("displayed_realized_pnl")
+        or summary.get("total_realized_pnl")
+        or 0
+    ))
     unrealized = Decimal(str(summary.get("total_unrealized_pnl", 0) or 0))
     return realized + unrealized
 
@@ -147,6 +151,7 @@ def _build_breakdown_rows(s):
 # B52 — Confirmation/review helpers for write operations
 # ---------------------------------------------------------------------------
 
+_HIST_PNL_FIELDS = ("adjustment_date", "source", "amount_usd", "description")
 _TRANSACTION_FIELDS = ("side", "account", "symbol", "tx_date", "qty", "price", "fee", "notes")
 _CDT_FIELDS = (
     "account", "symbol", "open_date", "maturity_date", "principal", "currency",
@@ -161,6 +166,40 @@ _CASH_FIELDS = ("account", "movement_date", "movement_type", "amount", "notes")
 
 def _raw_payload(form, fields):
     return {field: form.get(field, "") for field in fields}
+
+
+def _validate_hist_pnl_form(form):
+    """Parse + validate Add Historical PnL Adjustment form. Returns dict or raises ValueError."""
+    adjustment_date = form.get("adjustment_date", "").strip()
+    source = form.get("source", "").strip()
+    amount_str = form.get("amount_usd", "").strip()
+    description = form.get("description", "").strip() or None
+
+    if not adjustment_date:
+        raise ValueError("Date is required")
+    if not source:
+        raise ValueError("Source is required")
+    amount_usd = _parse_decimal(amount_str, "Amount USD")
+    return {
+        "adjustment_date": adjustment_date,
+        "source": source,
+        "amount_usd": amount_usd,
+        "description": description,
+    }
+
+
+def _summary_hist_pnl(parsed):
+    sign = "+" if parsed["amount_usd"] >= 0 else ""
+    return [
+        ("Date", parsed["adjustment_date"]),
+        ("Source", parsed["source"]),
+        ("Amount USD", f"{sign}{_format_money(parsed['amount_usd'])} USD"),
+        ("Description", parsed["description"] or "—"),
+        ("Affects cash", "No"),
+        ("Affects open positions", "No"),
+        ("Affects total equity", "No"),
+        ("Affects realized PnL", "Yes"),
+    ]
 
 
 def _validate_transaction_form(form):
@@ -1388,6 +1427,81 @@ def add_fund_movement():
         active=active,
         active_section="operations",
         next_url=request.args.get("next_url", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# B57 — Historical Realized PnL Adjustments
+# ---------------------------------------------------------------------------
+
+@bp.route("/historical-pnl", methods=["GET", "POST"])
+def historical_pnl():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
+        try:
+            parsed = _validate_hist_pnl_form(request.form)
+
+            if review_mode:
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="reports",
+                    title="Review Historical PnL Adjustment",
+                    summary=_summary_hist_pnl(parsed),
+                    raw_payload=_raw_payload(request.form, _HIST_PNL_FIELDS),
+                    endpoint_url=url_for("gui.historical_pnl"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=None,
+                )
+
+            backup_path, abort = _backup_before_write(
+                active, "add_historical_pnl_adjustment", "gui.historical_pnl",
+            )
+            if abort is not None:
+                return abort
+
+            db, resolver, _tx_svc, pnl_svc = _get_db_and_services(active)
+            try:
+                adj_id = pnl_svc.add_historical_realized_pnl_adjustment(
+                    adjustment_date=parsed["adjustment_date"],
+                    source=parsed["source"],
+                    description=parsed["description"],
+                    amount_usd=parsed["amount_usd"],
+                )
+                flash(
+                    f"OK: Historical PnL adjustment saved, id={adj_id}"
+                    f"{_backup_suffix(backup_path)}",
+                    "success",
+                )
+            finally:
+                db.close()
+
+        except ValueError as exc:
+            flash(str(exc), "error")
+
+        return _redirect_after_write("gui.historical_pnl")
+
+    db, _resolver, _tx_svc, pnl_svc = _get_db_and_services(active)
+    try:
+        adjustments = pnl_svc.list_historical_realized_pnl_adjustments()
+        total_adjustment = pnl_svc.sum_historical_realized_pnl_adjustments()
+    finally:
+        db.close()
+
+    return render_template(
+        "historical_pnl.html",
+        active=active,
+        active_section="reports",
+        adjustments=adjustments,
+        total_adjustment=total_adjustment,
+        next_url=url_for("gui.historical_pnl"),
+        format_money=_format_money,
     )
 
 

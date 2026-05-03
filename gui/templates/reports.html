@@ -41,8 +41,12 @@
   </div>
   <div class="metric-card">
     <span class="label">Realized PnL</span>
-    <span class="value small {{ 'value-pos' if s.total_realized_pnl > 0 else ('value-neg' if s.total_realized_pnl < 0 else '') }}">{{ format_money(s.total_realized_pnl) }}</span>
-    <span class="sub">closed lots + CDT interest</span>
+    <span class="value small {{ 'value-pos' if s.displayed_realized_pnl > 0 else ('value-neg' if s.displayed_realized_pnl < 0 else '') }}">{{ format_money(s.displayed_realized_pnl) }}</span>
+    {% if s.historical_realized_pnl and s.historical_realized_pnl != 0 %}
+      <span class="sub">ledger {{ format_money(s.total_realized_pnl) }} + hist. {{ format_money(s.historical_realized_pnl) }}</span>
+    {% else %}
+      <span class="sub">closed lots + CDT interest</span>
+    {% endif %}
   </div>
   <div class="metric-card">
     <span class="label">Unrealized PnL</span>
@@ -122,6 +126,13 @@
     <p>Read-only transaction ledger with filters by account, symbol, side.</p>
     <div class="hub-actions">
       <a href="{{ url_for('gui.transactions') }}" class="qa-btn qa-primary">Open Ledger</a>
+    </div>
+  </div>
+  <div class="hub-tile">
+    <h3>Historical PnL Adjustments</h3>
+    <p>Record prior realized gains/losses (e.g. Vanguard historical 2022–2025) that count toward lifetime realized PnL without affecting cash, positions, or equity.</p>
+    <div class="hub-actions">
+      <a href="{{ url_for('gui.historical_pnl') }}" class="qa-btn qa-primary">Open</a>
     </div>
   </div>
 </div>

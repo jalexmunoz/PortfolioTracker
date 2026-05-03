@@ -87,6 +87,8 @@ def _build_summary_export_payload(summary: dict) -> dict:
         'generated_at': datetime.now(timezone.utc).isoformat(),
         'total_cost_basis': _to_json_scalar(summary['total_cost_basis']),
         'total_realized_pnl': _to_json_scalar(summary['total_realized_pnl']),
+        'historical_realized_pnl': _to_json_scalar(summary.get('historical_realized_pnl', Decimal('0'))),
+        'displayed_realized_pnl': _to_json_scalar(summary.get('displayed_realized_pnl', summary['total_realized_pnl'])),
         'cash_balance': _to_json_scalar(summary['cash_balance']),
         'total_equity': _to_json_scalar(summary['total_equity']),
         'market_covered_value': _to_json_scalar(summary['market_covered_value']),
@@ -126,6 +128,8 @@ def _build_summary_output_json_payload(summary: dict) -> dict:
     return {
         'total_cost_basis': _to_json_scalar(summary['total_cost_basis']),
         'total_realized_pnl': _to_json_scalar(summary['total_realized_pnl']),
+        'historical_realized_pnl': _to_json_scalar(summary.get('historical_realized_pnl', Decimal('0'))),
+        'displayed_realized_pnl': _to_json_scalar(summary.get('displayed_realized_pnl', summary['total_realized_pnl'])),
         'cash_balance': _to_json_scalar(summary['cash_balance']),
         'total_equity': _to_json_scalar(summary['total_equity']),
         'market_covered_value': _to_json_scalar(summary['market_covered_value']),
@@ -273,7 +277,10 @@ def _print_daily_report_block(run_timestamp: str, summary: dict, positions: list
     click.echo(f"Total Equity: {format_money(summary['total_equity'])}")
     click.echo(f"Cash balance: {format_money(summary['cash_balance'])}")
     click.echo(f"Total market value: {format_money(summary['total_market_value'])}")
-    click.echo(f"Realized PnL: {format_money(summary['total_realized_pnl'])}")
+    displayed_realized = Decimal(str(
+        summary.get('displayed_realized_pnl') or summary.get('total_realized_pnl') or 0
+    ))
+    click.echo(f"Realized PnL: {format_money(displayed_realized)}")
     click.echo(f"Unrealized PnL: {format_money(summary['total_unrealized_pnl'])}")
     click.echo(f"Unrealized return %: {_format_optional_pct(summary['unrealized_return_pct'])}")
     click.echo(
@@ -318,7 +325,13 @@ def _print_daily_report_block(run_timestamp: str, summary: dict, positions: list
 
 def _print_summary_block(summary: dict) -> None:
     click.echo(f"Total cost basis: {format_money(summary['total_cost_basis'])}")
-    click.echo(f"Total realized PnL: {format_money(summary['total_realized_pnl'])}")
+    ledger_realized = Decimal(str(summary.get('total_realized_pnl', 0) or 0))
+    historical_adj = Decimal(str(summary.get('historical_realized_pnl', 0) or 0))
+    displayed_realized = Decimal(str(summary.get('displayed_realized_pnl', ledger_realized) or 0))
+    if historical_adj != 0:
+        click.echo(f"  Realized PnL (ledger): {format_money(ledger_realized)}")
+        click.echo(f"  Historical realized adjustments: {format_money(historical_adj)}")
+    click.echo(f"Total realized PnL: {format_money(displayed_realized)}")
     click.echo(f"Cash balance: {format_money(summary['cash_balance'])}")
     click.echo(f"Total Equity: {format_money(summary['total_equity'])}")
     click.echo(f"Market-Covered Value: {format_money(summary['market_covered_value'])}")

@@ -48,8 +48,12 @@
     </div>
     <div class="metric-card">
       <span class="label">Realized PnL</span>
-      <span class="value {{ 'value-pos' if summary.total_realized_pnl > 0 else ('value-neg' if summary.total_realized_pnl < 0 else '') }}">{{ format_money(summary.total_realized_pnl) }}</span>
-      <span class="sub">closed lots, lifetime</span>
+      <span class="value {{ 'value-pos' if summary.displayed_realized_pnl > 0 else ('value-neg' if summary.displayed_realized_pnl < 0 else '') }}">{{ format_money(summary.displayed_realized_pnl) }}</span>
+      {% if summary.historical_realized_pnl and summary.historical_realized_pnl != 0 %}
+        <span class="sub">ledger {{ format_money(summary.total_realized_pnl) }} + hist. {{ format_money(summary.historical_realized_pnl) }}</span>
+      {% else %}
+        <span class="sub">closed lots, lifetime</span>
+      {% endif %}
     </div>
   </div>
 
