@@ -47,7 +47,7 @@
             {% if gui_active_db %}
               <span class="badge badge-{{ gui_active_db.mode|lower }}">{{ gui_active_db.mode }}</span>
               <span class="context-label">DB:</span>
-              <code class="db-path" title="{{ gui_active_db.db_path }}">{{ gui_active_db.db_path }}</code>
+              <code class="db-path" title="{{ gui_active_db.db_path }}">{{ gui_active_db.db_path.split('\\')[-1].split('/')[-1] }}</code>
             {% else %}
               <span class="badge badge-none">NO DB</span>
               <span class="context-label">No active DB selected</span>

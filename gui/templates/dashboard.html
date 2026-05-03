@@ -29,7 +29,11 @@
 
 {% else %}
 
-  {# ---- Hero metrics ---- #}
+  {# ══════════════════════════════════════════════════════ #}
+  {# Zona 1 — KPIs financieros                             #}
+  {# ══════════════════════════════════════════════════════ #}
+
+  {# Fila 1: Total Equity / Total Invested / Net P&L / Cash #}
   <div class="cards-grid">
     <div class="metric-card">
       <span class="label">Total Equity</span>
@@ -37,87 +41,86 @@
       <span class="sub">cash + valued positions</span>
     </div>
     <div class="metric-card">
+      <span class="label">Total Invested</span>
+      <span class="value">{{ format_money(summary.total_cost_basis) }}</span>
+      <span class="sub">cost basis</span>
+    </div>
+    <div class="metric-card">
+      <span class="label">Net P&amp;L</span>
+      <span class="value {{ 'value-pos' if total_pnl > 0 else ('value-neg' if total_pnl < 0 else '') }}">{{ format_money(total_pnl) }}</span>
+      <span class="sub">realized + unrealized</span>
+    </div>
+    <div class="metric-card">
       <span class="label">Cash Balance</span>
       <span class="value {{ 'value-neg' if summary.cash_balance < 0 else '' }}">{{ format_money(summary.cash_balance) }}</span>
       <span class="sub">USD on hand</span>
     </div>
+  </div>
+
+  {# Fila 2: Realized / Unrealized / Open Positions / Excluded Cost Basis #}
+  <div class="cards-grid">
     <div class="metric-card">
-      <span class="label">Market Covered</span>
-      <span class="value">{{ format_money(summary.market_covered_value) }}</span>
-      <span class="sub">live-priced positions</span>
-    </div>
-    <div class="metric-card">
-      <span class="label">Realized PnL</span>
-      <span class="value {{ 'value-pos' if summary.displayed_realized_pnl > 0 else ('value-neg' if summary.displayed_realized_pnl < 0 else '') }}">{{ format_money(summary.displayed_realized_pnl) }}</span>
+      <span class="label">Realized P&amp;L</span>
+      <span class="value small {{ 'value-pos' if summary.displayed_realized_pnl > 0 else ('value-neg' if summary.displayed_realized_pnl < 0 else '') }}">{{ format_money(summary.displayed_realized_pnl) }}</span>
       {% if summary.historical_realized_pnl and summary.historical_realized_pnl != 0 %}
         <span class="sub">ledger {{ format_money(summary.total_realized_pnl) }} + hist. {{ format_money(summary.historical_realized_pnl) }}</span>
       {% else %}
         <span class="sub">closed lots, lifetime</span>
       {% endif %}
     </div>
-  </div>
-
-  <div class="cards-grid">
     <div class="metric-card">
-      <span class="label">Unrealized PnL</span>
+      <span class="label">Unrealized P&amp;L</span>
       <span class="value small {{ 'value-pos' if summary.total_unrealized_pnl > 0 else ('value-neg' if summary.total_unrealized_pnl < 0 else '') }}">{{ format_money(summary.total_unrealized_pnl) }}</span>
       <span class="sub">{% if summary.unrealized_return_pct is not none %}{{ summary.unrealized_return_pct }}% return{% else %}open positions{% endif %}</span>
-    </div>
-    <div class="metric-card">
-      <span class="label">Total PnL</span>
-      <span class="value small {{ 'value-pos' if total_pnl > 0 else ('value-neg' if total_pnl < 0 else '') }}">{{ format_money(total_pnl) }}</span>
-      <span class="sub">realized + unrealized</span>
-    </div>
-    <div class="metric-card">
-      <span class="label">Non-Market Valued</span>
-      <span class="value small">{{ format_money(summary.non_market_valued) }}</span>
-      <span class="sub">CDT, fund balances</span>
     </div>
     <div class="metric-card">
       <span class="label">Open Positions</span>
       <span class="value small">{{ positions_count }}</span>
       <span class="sub">{{ tx_count }} ledger entries</span>
     </div>
+    <div class="metric-card">
+      <span class="label">Excluded Cost Basis</span>
+      {% if summary.unvalued_excluded_cost_basis and summary.unvalued_excluded_cost_basis > 0 %}
+        <span class="value small value-warn">{{ format_money(summary.unvalued_excluded_cost_basis) }}</span>
+        <span class="sub">{{ summary.unvalued_positions }} unvalued position(s)</span>
+      {% else %}
+        <span class="value small muted">—</span>
+        <span class="sub">all positions valued</span>
+      {% endif %}
+    </div>
   </div>
 
-  <div class="cards-grid">
-    <div class="metric-card">
-      <span class="label">Price Quality</span>
-      <span class="value small">
+  {# ══════════════════════════════════════════════════════ #}
+  {# Zona 2 — Health & counts (banda compacta)             #}
+  {# ══════════════════════════════════════════════════════ #}
+  <div class="health-band">
+    <div class="health-item">
+      <span class="health-label">Price Quality</span>
+      <span class="health-value">
         <span class="value-pos">{{ counts.get('usable', 0) }}</span>
-        / <span class="value-warn">{{ counts.get('stale', 0) }}</span>
-        / <span class="value-neg">{{ counts.get('unavailable', 0) }}</span>
+        &thinsp;/&thinsp;<span class="value-warn">{{ counts.get('stale', 0) }}</span>
+        &thinsp;/&thinsp;<span class="value-neg">{{ counts.get('unavailable', 0) }}</span>
+        <span style="color:var(--text-3);font-size:0.7rem;margin-left:0.3rem;">usable / stale / unavail</span>
       </span>
-      <span class="sub">usable / stale / unavailable</span>
     </div>
-    <div class="metric-card">
-      <span class="label">Last Price Refresh</span>
-      <span class="value small">{{ last_refresh_display }}</span>
-      <span class="sub">from newest asset price</span>
+    <div class="health-sep"></div>
+    <div class="health-item">
+      <span class="health-label">Market Covered</span>
+      <span class="health-value">{{ format_money(summary.market_covered_value) }}</span>
     </div>
-  </div>
-
-  {# ---- Quick actions ---- #}
-  <div class="panel">
-    <div class="panel-title">Quick Actions</div>
-    <div class="quick-actions">
-      <form method="post" action="{{ url_for('gui.refresh_prices_route') }}" style="display:inline;">
-        <input type="hidden" name="next_url" value="{{ url_for('gui.dashboard') }}">
-        <button type="submit" class="qa-btn qa-primary">Refresh Prices</button>
-      </form>
-      <a href="{{ url_for('gui.add_transaction') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ BUY / SELL</a>
-      <a href="{{ url_for('gui.add_cash_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Cash Deposit/Withdrawal</a>
-      <a href="{{ url_for('gui.add_cdt') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ CDT</a>
-      <a href="{{ url_for('gui.add_fund_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Fund Movement</a>
-      <a href="{{ url_for('gui.import_legacy') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">Import Legacy</a>
-      <form method="post" action="{{ url_for('gui.backup') }}" style="display:inline;">
-        <input type="hidden" name="next_url" value="{{ url_for('gui.dashboard') }}">
-        <button type="submit" class="qa-btn">Backup DB</button>
-      </form>
+    <div class="health-sep"></div>
+    <div class="health-item">
+      <span class="health-label">Non-Market</span>
+      <span class="health-value">{{ format_money(summary.non_market_valued) }}</span>
+    </div>
+    <div class="health-sep"></div>
+    <div class="health-item">
+      <span class="health-label">Last Refresh</span>
+      <span class="health-value" style="font-size:0.82rem;font-weight:500;">{{ last_refresh_display }}</span>
     </div>
   </div>
 
-  {# ---- Alerts ---- #}
+  {# ── Alerts ── #}
   {% if warnings %}
   <div class="panel panel-danger">
     <div class="panel-title">Alerts</div>
@@ -129,31 +132,28 @@
   </div>
   {% endif %}
 
-  {# ---- Two-column: Asset allocation + Top positions ---- #}
+  {# ══════════════════════════════════════════════════════ #}
+  {# Zona 3 — Visualizaciones                              #}
+  {# ══════════════════════════════════════════════════════ #}
   <div class="row-2">
+
+    {# Asset Allocation — barras horizontales con categoría, barra, monto y % #}
     <div class="panel">
       <div class="panel-title-row">
         <span class="panel-title">Asset Allocation</span>
-        <a href="{{ url_for('gui.summary') }}" class="muted" style="font-size: 0.78rem;">view summary &rarr;</a>
+        <a href="{{ url_for('gui.summary') }}" class="muted" style="font-size:0.78rem;">view summary &rarr;</a>
       </div>
       {% if summary.total_equity and summary.total_equity > 0 %}
         <div class="bar-chart">
           {% for r in breakdown_rows %}
-            <div class="bar-row">
+            <div class="alloc-row">
               <span class="bar-label">{{ r.asset_class }}</span>
               <div class="bar-track">
                 <div class="bar-fill cls-{{ r.asset_class }}" style="width: {{ r.pct }}%;"></div>
               </div>
+              <span class="alloc-amount">{{ format_money(r.equity) }}</span>
               <span class="bar-pct">{{ r.pct }}%</span>
             </div>
-          {% endfor %}
-        </div>
-        <div class="legend">
-          {% for r in breakdown_rows %}
-            <span class="legend-chip">
-              <span class="legend-dot" style="background: var(--{{ r.asset_class|lower if r.asset_class != 'Non-market' else 'nonmarket' }});"></span>
-              {{ r.asset_class }}: {{ format_money(r.equity) }}
-            </span>
           {% endfor %}
         </div>
       {% else %}
@@ -161,31 +161,70 @@
       {% endif %}
     </div>
 
+    {# P&L by Position — eje central verde/rojo, top 10 por magnitud #}
+    <div class="panel">
+      <div class="panel-title-row">
+        <span class="panel-title">P&amp;L by Position</span>
+        <span class="muted" style="font-size:0.78rem;">top 10 by impact</span>
+      </div>
+      {% if pnl_positions %}
+        <div class="pnl-chart">
+          {% for row in pnl_positions %}
+            {% set is_pos = row.unrealized_pnl >= 0 %}
+            <div class="pnl-row">
+              <span class="pnl-label" title="{{ row.symbol }}{% if row.account %} — {{ row.account }}{% endif %}">{{ row.symbol }}</span>
+              <div class="pnl-track">
+                <div class="pnl-axis-line"></div>
+                {% if is_pos %}
+                  <div class="pnl-fill-pos" style="width: {{ row.bar_half_pct }}%;"></div>
+                {% else %}
+                  <div class="pnl-fill-neg" style="width: {{ row.bar_half_pct }}%;"></div>
+                {% endif %}
+              </div>
+              <span class="pnl-amount {{ 'value-pos' if is_pos else 'value-neg' }}">
+                {%- if is_pos %}+{% endif %}{{ format_money(row.unrealized_pnl) -}}
+              </span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">No valued positions yet. Run Refresh Prices or import a snapshot.</p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  {# ══════════════════════════════════════════════════════ #}
+  {# Zona 4 — Detalle                                      #}
+  {# ══════════════════════════════════════════════════════ #}
+  <div class="row-2">
+
+    {# Top Positions — status dot compacto #}
     <div class="panel">
       <div class="panel-title-row">
         <span class="panel-title">Top Positions</span>
-        <a href="{{ url_for('gui.portfolio') }}" class="muted" style="font-size: 0.78rem;">view all &rarr;</a>
+        <a href="{{ url_for('gui.portfolio') }}" class="muted" style="font-size:0.78rem;">view all &rarr;</a>
       </div>
       {% if top_positions %}
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th style="width:18px;"></th>
                 <th>Symbol</th>
                 <th>Account</th>
-                <th class="num">Qty</th>
                 <th class="num">Value</th>
-                <th>Status</th>
               </tr>
             </thead>
             <tbody>
               {% for p in top_positions %}
               <tr>
+                <td style="padding-right:0;">
+                  <span class="status-dot dot-{{ p.valuation_status }}" title="{{ p.valuation_status }}"></span>
+                </td>
                 <td><strong>{{ p.symbol }}</strong></td>
-                <td>{{ p.account or '—' }}</td>
-                <td class="num">{{ format_qty(p.qty_open) }}</td>
+                <td class="muted" style="font-size:0.82rem;">{{ p.account or '—' }}</td>
                 <td class="num">{{ format_money(p.approved_value) }}</td>
-                <td><span class="pill pill-status-{{ p.valuation_status }}">{{ p.valuation_status }}</span></td>
               </tr>
               {% endfor %}
             </tbody>
@@ -194,6 +233,53 @@
       {% else %}
         <p class="muted">No valued positions yet. Run import legacy or add a BUY.</p>
       {% endif %}
+    </div>
+
+    {# Wallet Distribution — barras horizontales por cuenta #}
+    <div class="panel">
+      <div class="panel-title-row">
+        <span class="panel-title">Wallet Distribution</span>
+        <a href="{{ url_for('gui.portfolio') }}" class="muted" style="font-size:0.78rem;">view all &rarr;</a>
+      </div>
+      {% if wallet_rows %}
+        <div class="wallet-chart">
+          {% for row in wallet_rows %}
+            <div class="wallet-row">
+              <span class="wallet-label" title="{{ row.account }}">{{ row.account }}</span>
+              <div class="bar-track">
+                <div class="bar-fill" style="width: {{ row.pct }}%; background: var(--accent);"></div>
+              </div>
+              <span class="wallet-pct">{{ row.pct }}%</span>
+              <span class="wallet-value">{{ format_money(row.value) }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">No valued positions yet.</p>
+      {% endif %}
+    </div>
+
+  </div>
+
+  {# ══════════════════════════════════════════════════════ #}
+  {# Zona 5 — Acciones operativas (secundario, al fondo)   #}
+  {# ══════════════════════════════════════════════════════ #}
+  <div class="panel">
+    <div class="panel-title">Quick Actions</div>
+    <div class="quick-actions">
+      <form method="post" action="{{ url_for('gui.refresh_prices_route') }}" style="display:inline;">
+        <input type="hidden" name="next_url" value="{{ url_for('gui.dashboard') }}">
+        <button type="submit" class="qa-btn qa-primary">Refresh Prices</button>
+      </form>
+      <a href="{{ url_for('gui.add_transaction') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ BUY / SELL</a>
+      <a href="{{ url_for('gui.add_cash_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Cash Deposit/Withdrawal</a>
+      <a href="{{ url_for('gui.add_fund_movement') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ Fund Movement</a>
+      <a href="{{ url_for('gui.add_cdt') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">+ CDT</a>
+      <a href="{{ url_for('gui.import_legacy') }}?next_url={{ url_for('gui.dashboard') }}" class="qa-btn">Import Legacy</a>
+      <form method="post" action="{{ url_for('gui.backup') }}" style="display:inline;">
+        <input type="hidden" name="next_url" value="{{ url_for('gui.dashboard') }}">
+        <button type="submit" class="qa-btn">Backup DB</button>
+      </form>
     </div>
   </div>
 

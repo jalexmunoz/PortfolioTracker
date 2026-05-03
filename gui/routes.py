@@ -708,6 +708,8 @@ def dashboard():
     positions_list = []
     breakdown_rows = []
     top_positions = []
+    pnl_positions = []
+    wallet_rows = []
     counts = {}
     warnings = []
     load_error = None
@@ -729,7 +731,49 @@ def dashboard():
             [p for p in positions_list if p.get("approved_value") is not None and p["qty_open"] > 0],
             key=lambda p: Decimal(str(p["approved_value"])),
             reverse=True,
-        )[:5]
+        )[:10]
+
+        # B59A: P&L by Position — top 10 by magnitude of unrealized P&L
+        valued = [
+            p for p in positions_list
+            if p.get("approved_value") is not None and p["qty_open"] > 0
+        ]
+        raw_pnl = []
+        for p in valued:
+            upnl = Decimal(str(p["approved_value"])) - Decimal(str(p["cost_basis"]))
+            raw_pnl.append({
+                "symbol": p["symbol"],
+                "account": p["account"],
+                "unrealized_pnl": upnl,
+            })
+        raw_pnl.sort(key=lambda x: abs(x["unrealized_pnl"]), reverse=True)
+        pnl_positions = raw_pnl[:10]
+        pnl_max = max(
+            (abs(x["unrealized_pnl"]) for x in pnl_positions),
+            default=Decimal("1"),
+        ) or Decimal("1")  # guard: all break-even → avoid 0/0
+        for row in pnl_positions:
+            row["bar_half_pct"] = round(float(abs(row["unrealized_pnl"]) / pnl_max * 50), 1)
+
+        # B59A: Wallet Distribution — group positions by account
+        wallet_totals: dict = {}
+        for p in valued:
+            acc = p["account"] or "Unknown"
+            wallet_totals[acc] = wallet_totals.get(acc, Decimal("0")) + Decimal(str(p["approved_value"]))
+        wallet_total = sum(wallet_totals.values(), Decimal("0"))
+        wallet_rows = sorted(
+            [
+                {
+                    "account": k,
+                    "value": v,
+                    "pct": ((v / wallet_total) * 100).quantize(Decimal("0.01"))
+                    if wallet_total > 0 else Decimal("0"),
+                }
+                for k, v in wallet_totals.items()
+            ],
+            key=lambda x: x["value"],
+            reverse=True,
+        )
 
         counts = summary.get("price_quality_counts", {}) or {}
         stale = int(counts.get("stale", 0) or 0)
@@ -755,6 +799,8 @@ def dashboard():
         tx_count=tx_count,
         top_positions=top_positions,
         breakdown_rows=breakdown_rows,
+        pnl_positions=pnl_positions,
+        wallet_rows=wallet_rows,
         counts=counts,
         warnings=warnings,
         load_error=load_error,

@@ -273,9 +273,9 @@ def test_dashboard_shows_refresh_button_and_last_refresh(gui_env):
     assert resp.status_code == 200
     body = resp.data.decode("utf-8", errors="ignore")
     assert "Refresh Prices" in body
-    assert "Last Price Refresh" in body
+    assert "Last Refresh" in body        # B59A: health band label
     assert "No refresh yet" in body
-    assert "Total PnL" in body
+    assert "Net P&amp;L" in body or "Net P&L" in body  # B59A: renamed from Total PnL
     assert "Cash Deposit/Withdrawal" in body
 
 
@@ -1481,3 +1481,217 @@ def test_b56_export_no_db_redirects_to_setup(gui_no_db):
     resp = gui_no_db.get("/portfolio/export.csv")
     assert resp.status_code in (302, 303)
     assert "/setup" in resp.headers.get("Location", "")
+
+
+# ----- B59A: Dashboard presentation redesign -----
+
+def _seed_priced_position(db_path, symbol, account, qty, cost_basis, current_price):
+    """Seed a position with snapshot_imported valuation so approved_value is computed."""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT OR IGNORE INTO assets
+               (symbol, asset_type, is_active, valuation_method,
+                current_price, price_source, price_updated_at)
+               VALUES (?, 'crypto', 1, 'snapshot_imported', ?, 'snapshot_imported', '2026-01-01')""",
+            (symbol, current_price),
+        )
+        cur.execute("SELECT id FROM assets WHERE symbol = ?", (symbol,))
+        asset_id = cur.fetchone()[0]
+        cur.execute("INSERT OR IGNORE INTO accounts (name) VALUES (?)", (account,))
+        cur.execute("SELECT id FROM accounts WHERE name = ?", (account,))
+        account_id = cur.fetchone()[0]
+        unit_price = cost_basis / qty
+        cur.execute(
+            """INSERT INTO transactions
+               (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date)
+               VALUES (?, ?, 'MIGRATION_BUY', ?, ?, 0.0, ?, '2026-01-01')""",
+            (asset_id, account_id, qty, unit_price, cost_basis),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_b59a_dashboard_renders(gui_env):
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+
+
+def test_b59a_total_invested_in_dashboard(gui_env):
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Total Invested" in body
+    assert "40,000.00" in body  # cost_basis shown as Total Invested value
+
+
+def test_b59a_net_pnl_in_dashboard(gui_env):
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Net P&amp;L" in body or "Net P&L" in body
+
+
+def test_b59a_net_pnl_equals_realized_plus_unrealized(gui_env):
+    """Net P&L card value is displayed_realized + total_unrealized."""
+    from decimal import Decimal as D
+    _seed_priced_position(gui_env["db_path"], "ETH", "Binance", 1.0, 2000.0, 3000.0)
+    s = _get_summary(gui_env["db_path"])
+    expected = s["displayed_realized_pnl"] + s["total_unrealized_pnl"]
+    # 1000 unrealized (3000-2000), 0 realized → net = 1000.00
+    assert expected == D("1000")
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "1,000.00" in body
+
+
+def test_b59a_realized_pnl_shows_ledger_and_hist_subtext(gui_env):
+    """Realized P&L card shows ledger+hist subtext when a historical adjustment exists."""
+    client = gui_env["client"]
+    # Seed buy then sell for ledger realized PnL
+    client.post("/add-transaction", data={
+        "side": "BUY", "account": "Binance", "symbol": "ETH",
+        "tx_date": "2026-01-01", "qty": "1", "price": "2000", "fee": "0",
+        "confirmed": "1", "next_url": "/",
+    })
+    client.post("/add-transaction", data={
+        "side": "SELL", "account": "Binance", "symbol": "ETH",
+        "tx_date": "2026-01-10", "qty": "1", "price": "2200", "fee": "0",
+        "confirmed": "1", "next_url": "/",
+    })
+    # Add historical PnL adjustment
+    client.post("/historical-pnl", data={
+        "adjustment_date": "2025-12-31",
+        "source": "legacy_broker",
+        "amount_usd": "500",
+        "confirmed": "1",
+        "next_url": "/",
+    })
+    resp = client.get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Realized P" in body
+    assert "ledger" in body
+    assert "hist." in body
+
+
+def test_b59a_excluded_cost_basis_visible_when_unvalued_exist(gui_env):
+    """Excluded Cost Basis card appears with amount when unvalued positions exist."""
+    import sqlite3
+    conn = sqlite3.connect(gui_env["db_path"])
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT OR IGNORE INTO assets (symbol, asset_type, is_active, valuation_method) "
+            "VALUES ('ILLIQ', 'crypto', 1, 'unvalued')",
+        )
+        cur.execute("SELECT id FROM assets WHERE symbol = 'ILLIQ'")
+        asset_id = cur.fetchone()[0]
+        cur.execute("INSERT OR IGNORE INTO accounts (name) VALUES ('TestWallet')")
+        cur.execute("SELECT id FROM accounts WHERE name = 'TestWallet'")
+        account_id = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO transactions "
+            "(asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date) "
+            "VALUES (?, ?, 'BUY', 100.0, 0.5, 0.0, 50.0, '2026-01-01')",
+            (asset_id, account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Excluded Cost Basis" in body
+    assert "50.00" in body  # the cost basis of the unvalued position
+
+
+def test_b59a_excluded_cost_basis_shows_dash_when_all_valued(gui_env):
+    """When all positions are valued, Excluded Cost Basis card shows '—'."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Excluded Cost Basis" in body
+    assert "all positions valued" in body
+
+
+def test_b59a_health_band_present(gui_env):
+    """Health band shows Price Quality, Market Covered, Non-Market, Last Refresh."""
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Price Quality" in body
+    assert "Market Covered" in body
+    assert "Non-Market" in body
+    assert "Last Refresh" in body
+    assert "No refresh yet" in body
+
+
+def test_b59a_pnl_positions_panel_renders(gui_env):
+    """P&L by Position panel renders with positions that have approved_value."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    _seed_priced_position(gui_env["db_path"], "ETH", "Binance", 2.0, 6000.0, 2500.0)
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "P&amp;L by Position" in body or "P&L by Position" in body
+    assert "BTC" in body
+    assert "ETH" in body
+
+
+def test_b59a_pnl_positions_shows_pos_and_neg_bars(gui_env):
+    """P&L chart renders both positive (green) and negative (red) bar classes."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)  # +10k
+    _seed_priced_position(gui_env["db_path"], "ETH", "Binance", 2.0, 6000.0, 2500.0)    # -1k
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "pnl-fill-pos" in body
+    assert "pnl-fill-neg" in body
+
+
+def test_b59a_wallet_distribution_renders(gui_env):
+    """Wallet Distribution panel shows each seeded account."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    _seed_priced_position(gui_env["db_path"], "ETH", "Coinbase", 2.0, 6000.0, 2500.0)
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Wallet Distribution" in body
+    assert "Binance" in body
+    assert "Coinbase" in body
+
+
+def test_b59a_wallet_distribution_empty_when_no_positions(gui_env):
+    """Wallet Distribution shows empty state when no valued positions exist."""
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Wallet Distribution" in body
+
+
+def test_b59a_top_positions_renders(gui_env):
+    """Top Positions panel shows the seeded position."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Top Positions" in body
+    assert "BTC" in body
+
+
+def test_b59a_top_positions_uses_status_dot(gui_env):
+    """Top Positions uses status-dot CSS class (not pill-status)."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "status-dot" in body
+
+
+def test_b59a_quick_actions_still_present(gui_env):
+    """Quick Actions zone still has all expected action buttons."""
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Quick Actions" in body
+    assert "Refresh Prices" in body
+    assert "BUY / SELL" in body
+    assert "Cash Deposit/Withdrawal" in body
+    assert "Fund Movement" in body
+    assert "Backup DB" in body
