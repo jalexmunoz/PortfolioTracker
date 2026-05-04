@@ -166,12 +166,25 @@ class Database:
             amount_usd REAL NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS transfer_lot_matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transfer_out_tx_id INTEGER NOT NULL
+                REFERENCES transactions(id) ON DELETE CASCADE,
+            buy_tx_id INTEGER NOT NULL
+                REFERENCES transactions(id),
+            quantity REAL NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_tlm_out ON transfer_lot_matches(transfer_out_tx_id);
+        CREATE INDEX IF NOT EXISTS idx_tlm_buy ON transfer_lot_matches(buy_tx_id);
         """
 
         try:
             self.conn.executescript(schema_sql)
             self._ensure_assets_schema_extensions()
             self._ensure_historical_pnl_schema()
+            self._ensure_transfer_schema()
             self.commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Schema initialization failed: {e}")
@@ -210,5 +223,29 @@ class Database:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
+        )
+        conn.commit()
+
+    def _ensure_transfer_schema(self) -> None:
+        """Create transfer_lot_matches table and indexes if missing. Safe migration for existing DBs."""
+        conn = self.connect()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transfer_lot_matches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                transfer_out_tx_id INTEGER NOT NULL
+                    REFERENCES transactions(id) ON DELETE CASCADE,
+                buy_tx_id INTEGER NOT NULL
+                    REFERENCES transactions(id),
+                quantity REAL NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tlm_out ON transfer_lot_matches(transfer_out_tx_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tlm_buy ON transfer_lot_matches(buy_tx_id)"
         )
         conn.commit()

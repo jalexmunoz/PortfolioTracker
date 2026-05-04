@@ -156,6 +156,14 @@
     </form>
   </div>
 
+
+  {# ---- Asset Transfer ---- #}
+  <div class="hub-tile">
+    <h3>Transfer Asset</h3>
+    <p>Move an asset between accounts/wallets. Cost basis is preserved. No PnL, no cash impact.</p>
+    <a href="{{ url_for('gui.transfer_asset') }}" class="btn {% if active is none %}disabled{% endif %}">Open Transfer Form</a>
+  </div>
+
 </div>
 
 <div class="panel panel-muted">

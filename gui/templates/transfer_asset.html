@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block page_title %}Asset Transfer{% endblock %}
+
+{% block content %}
+
+<div class="panel" style="max-width: 540px;">
+  <div class="panel-title">Transfer Asset Between Accounts</div>
+  <p class="muted" style="margin-top: 0;">
+    Moves quantity from source to destination without realizing PnL.
+    Fee is deducted from quantity sent. No cash impact.
+  </p>
+  <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+    <input type="hidden" name="review" value="1">
+
+    <label for="tx_date">Date (YYYY-MM-DD)</label>
+    <input type="text" id="tx_date" name="tx_date" required placeholder="2026-05-01">
+
+    <label for="source_account">Source Account</label>
+    <input type="text" id="source_account" name="source_account" required placeholder="e.g. Phemex">
+
+    <label for="dest_account">Destination Account</label>
+    <input type="text" id="dest_account" name="dest_account" required placeholder="e.g. Trezor">
+
+    <label for="symbol">Symbol</label>
+    <input type="text" id="symbol" name="symbol" required placeholder="BTC">
+
+    <label for="quantity_sent">Quantity Sent (from source)</label>
+    <input type="text" id="quantity_sent" name="quantity_sent" required placeholder="0.01">
+
+    <label for="fee_quantity">Fee Quantity (same asset, default 0)</label>
+    <input type="text" id="fee_quantity" name="fee_quantity" value="0">
+
+    <label for="notes">Notes (optional)</label>
+    <input type="text" id="notes" name="notes">
+
+    <button type="submit">Continue / Review</button>
+    <a href="{{ url_for('gui.operations') }}" class="btn btn-secondary">Cancel</a>
+  </form>
+</div>
+
+{% endblock %}

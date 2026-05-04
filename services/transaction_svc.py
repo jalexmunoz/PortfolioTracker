@@ -73,12 +73,14 @@ class TransactionService:
             WITH buy_qty AS (
                 SELECT COALESCE(SUM(quantity), 0) AS total
                 FROM transactions
-                WHERE asset_id = ? AND account_id = ? AND tx_type IN ('BUY', 'MIGRATION_BUY')
+                WHERE asset_id = ? AND account_id = ?
+                  AND tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
             ),
             sell_qty AS (
                 SELECT COALESCE(SUM(quantity), 0) AS total
                 FROM transactions
-                WHERE asset_id = ? AND account_id = ? AND tx_type = 'SELL'
+                WHERE asset_id = ? AND account_id = ?
+                  AND tx_type IN ('SELL', 'TRANSFER_OUT')
             )
             SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
             """,
@@ -400,11 +402,12 @@ class TransactionService:
             )
             sell_tx_id = cursor.lastrowid
 
-            # FIFO matching: find open buy positions
+            # FIFO matching: find open buy/transfer-in positions
             cursor.execute(
                 """
                 SELECT id, quantity, fee_usd FROM transactions
-                WHERE asset_id=? AND account_id=? AND tx_type IN ('BUY', 'MIGRATION_BUY')
+                WHERE asset_id=? AND account_id=?
+                  AND tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
                 ORDER BY tx_date ASC, id ASC
                 """,
                 (asset['id'], account_id)
@@ -421,14 +424,18 @@ class TransactionService:
                 buy_qty = Decimal(str(buy_row[1]))
                 buy_fee = Decimal(str(buy_row[2]))
 
-                # Calculate already matched qty for this buy
+                # Calculate already matched qty: sell matches + transfer matches
                 cursor.execute(
                     "SELECT COALESCE(SUM(quantity), 0) FROM lot_matches WHERE buy_tx_id = ?",
                     (buy_tx_id,)
                 )
-                matched_qty = Decimal(str(cursor.fetchone()[0]))
-
-                remaining_qty = buy_qty - matched_qty
+                sell_matched = Decimal(str(cursor.fetchone()[0]))
+                cursor.execute(
+                    "SELECT COALESCE(SUM(quantity), 0) FROM transfer_lot_matches WHERE buy_tx_id = ?",
+                    (buy_tx_id,)
+                )
+                transfer_matched = Decimal(str(cursor.fetchone()[0]))
+                remaining_qty = buy_qty - sell_matched - transfer_matched
 
                 if remaining_qty <= 0:
                     continue
@@ -915,7 +922,7 @@ class TransactionService:
         conn = self.db.connect()
         cursor = conn.cursor()
 
-        query = """
+        inner = """
             SELECT
                 t.id,
                 t.tx_date,
@@ -924,27 +931,28 @@ class TransactionService:
                 t.tx_type,
                 t.quantity,
                 t.unit_price,
-                COALESCE(SUM(lm.quantity), 0) AS matched_qty
+                COALESCE((SELECT SUM(lm.quantity) FROM lot_matches lm WHERE lm.buy_tx_id = t.id), 0) +
+                COALESCE((SELECT SUM(tlm.quantity) FROM transfer_lot_matches tlm WHERE tlm.buy_tx_id = t.id), 0)
+                    AS matched_qty
             FROM transactions t
             JOIN assets a ON a.id = t.asset_id
             JOIN accounts acc ON acc.id = t.account_id
-            LEFT JOIN lot_matches lm ON lm.buy_tx_id = t.id
-            WHERE t.tx_type IN ('BUY', 'MIGRATION_BUY')
+            WHERE t.tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
         """
 
         params = []
         if account:
-            query += " AND acc.name = ?"
+            inner += " AND acc.name = ?"
             params.append(account.strip())
         if symbol:
-            query += " AND a.symbol = ?"
+            inner += " AND a.symbol = ?"
             params.append(symbol.strip().upper())
 
-        query += """
-            GROUP BY t.id, t.tx_date, a.symbol, acc.name, t.tx_type, t.quantity, t.unit_price
-            HAVING (t.quantity - COALESCE(SUM(lm.quantity), 0)) > 0
-            ORDER BY acc.name ASC, a.symbol ASC, t.tx_date ASC, t.id ASC
-        """
+        query = (
+            f"SELECT * FROM ({inner}) sub"
+            " WHERE (sub.quantity - sub.matched_qty) > 0"
+            " ORDER BY sub.name ASC, sub.symbol ASC, sub.tx_date ASC, sub.id ASC"
+        )
 
         cursor.execute(query, tuple(params))
         rows = cursor.fetchall()
@@ -1083,9 +1091,13 @@ class TransactionService:
                 cursor.execute("DELETE FROM cash_ledger WHERE tx_id = ?", (tx_id,))
                 cursor.execute("SELECT COUNT(1) FROM lot_matches WHERE buy_tx_id = ?", (tx_id,))
                 match_count = int(cursor.fetchone()[0] or 0)
-                if match_count > 0:
+                cursor.execute(
+                    "SELECT COUNT(1) FROM transfer_lot_matches WHERE buy_tx_id = ?", (tx_id,)
+                )
+                transfer_match_count = int(cursor.fetchone()[0] or 0)
+                if match_count > 0 or transfer_match_count > 0:
                     raise InvalidTransaction(
-                        f"Cannot delete transaction {tx_id}: BUY is already matched to one or more SELL transactions"
+                        f"Cannot delete transaction {tx_id}: BUY is already matched to one or more SELL or TRANSFER_OUT transactions"
                     )
 
                 cursor.execute(
@@ -1112,6 +1124,214 @@ class TransactionService:
             raise InvalidTransaction(
                 f"Cannot delete transaction {tx_id}: unsupported tx_type '{tx_type}'"
             )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def _compute_transfer_fifo(
+        self, cursor, asset_id: int, src_account_id: int, quantity_sent: Decimal
+    ) -> tuple[list, Decimal]:
+        """FIFO cost computation for a transfer. Read-only — no DB writes.
+
+        Returns (consumed_lots, avg_cost_per_unit) where consumed_lots is a list
+        of (buy_tx_id, qty_consumed) pairs in FIFO order.
+        """
+        cursor.execute(
+            """
+            SELECT t.id, t.quantity, t.unit_price, t.fee_usd
+            FROM transactions t
+            WHERE t.asset_id = ? AND t.account_id = ?
+              AND t.tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
+            ORDER BY t.tx_date ASC, t.id ASC
+            """,
+            (asset_id, src_account_id),
+        )
+        open_lots = cursor.fetchall()
+
+        qty_remaining = quantity_sent
+        total_cost = Decimal("0")
+        consumed: list[tuple[int, Decimal]] = []
+
+        for lot in open_lots:
+            if qty_remaining <= Decimal("0"):
+                break
+            lot_tx_id = int(lot[0])
+            lot_qty = Decimal(str(lot[1]))
+            lot_unit_price = Decimal(str(lot[2])) if lot[2] is not None else Decimal("0")
+            lot_fee = Decimal(str(lot[3])) if lot[3] is not None else Decimal("0")
+
+            cursor.execute(
+                "SELECT COALESCE(SUM(quantity), 0) FROM lot_matches WHERE buy_tx_id = ?",
+                (lot_tx_id,),
+            )
+            sell_consumed = Decimal(str(cursor.fetchone()[0]))
+            cursor.execute(
+                "SELECT COALESCE(SUM(quantity), 0) FROM transfer_lot_matches WHERE buy_tx_id = ?",
+                (lot_tx_id,),
+            )
+            transfer_consumed = Decimal(str(cursor.fetchone()[0]))
+            lot_remaining = lot_qty - sell_consumed - transfer_consumed
+
+            if lot_remaining <= Decimal("0"):
+                continue
+
+            consume_qty = min(lot_remaining, qty_remaining)
+            cost_per_unit = lot_unit_price + (lot_fee / lot_qty if lot_qty > Decimal("0") else Decimal("0"))
+            total_cost += consume_qty * cost_per_unit
+            consumed.append((lot_tx_id, consume_qty))
+            qty_remaining -= consume_qty
+
+        avg_cost = (total_cost / quantity_sent) if quantity_sent > Decimal("0") else Decimal("0")
+        return consumed, avg_cost
+
+    def preview_asset_transfer(
+        self,
+        symbol: str,
+        source_account: str,
+        quantity_sent: Decimal,
+        fee_quantity: Decimal,
+    ) -> dict:
+        """Read-only: compute FIFO cost basis estimates for a prospective transfer."""
+        asset = self.resolver.resolve(symbol)
+        asset_id = asset["id"]
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM accounts WHERE name = ?", (source_account.strip(),))
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "avg_cost_per_unit": Decimal("0"),
+                "cost_basis_moved": Decimal("0"),
+                "cost_basis_fee": Decimal("0"),
+            }
+        src_account_id = row[0]
+        _, avg_cost = self._compute_transfer_fifo(cursor, asset_id, src_account_id, quantity_sent)
+        qty_received = quantity_sent - fee_quantity
+        return {
+            "avg_cost_per_unit": avg_cost,
+            "cost_basis_moved": qty_received * avg_cost,
+            "cost_basis_fee": fee_quantity * avg_cost,
+        }
+
+    def record_asset_transfer(
+        self,
+        symbol: str,
+        source_account: str,
+        dest_account: str,
+        quantity_sent: Decimal,
+        fee_quantity: Decimal,
+        tx_date: str,
+        notes: Optional[str] = None,
+    ) -> dict:
+        """Move qty of an asset between accounts without realizing PnL.
+
+        quantity_sent leaves source; (quantity_sent - fee_quantity) arrives in dest.
+        Cost basis is preserved proportionally via weighted FIFO average.
+        No cash_ledger entry is created (transfer has no cash impact).
+        """
+        if quantity_sent <= Decimal("0"):
+            raise InvalidTransaction("quantity_sent must be positive")
+        if fee_quantity < Decimal("0"):
+            raise InvalidTransaction("fee_quantity cannot be negative")
+        if fee_quantity >= quantity_sent:
+            raise InvalidTransaction("fee_quantity must be less than quantity_sent")
+        src = (source_account or "").strip()
+        dst = (dest_account or "").strip()
+        if not src:
+            raise InvalidTransaction("source_account cannot be empty")
+        if not dst:
+            raise InvalidTransaction("dest_account cannot be empty")
+        if src == dst:
+            raise InvalidTransaction("source_account and dest_account must be different")
+
+        tx_date_iso = self._parse_iso_date(tx_date, "tx_date")
+        asset = self.resolver.resolve(symbol)
+        asset_id = asset["id"]
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            src_account_id = self._get_or_create_account(src, cursor)
+            dst_account_id = self._get_or_create_account(dst, cursor)
+
+            available = self._open_qty_for_asset_account(cursor, asset_id, src_account_id)
+            if available < quantity_sent:
+                raise InvalidTransaction(
+                    f"Insufficient holdings in {src}: need {quantity_sent} but only {available} available"
+                )
+
+            consumed, avg_cost_per_unit = self._compute_transfer_fifo(
+                cursor, asset_id, src_account_id, quantity_sent
+            )
+
+            qty_received = quantity_sent - fee_quantity
+            fee_str = str(fee_quantity.normalize())
+            out_notes = f"TRANSFER_OUT:to={dst},fee={fee_str}"
+            if notes:
+                out_notes = f"{out_notes} | {notes}"
+
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                  (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, 'TRANSFER_OUT', ?, ?, 0.0, 0.0, ?, ?)
+                """,
+                (
+                    asset_id,
+                    src_account_id,
+                    float(quantity_sent),
+                    float(avg_cost_per_unit),
+                    tx_date_iso,
+                    out_notes,
+                ),
+            )
+            out_tx_id = cursor.lastrowid
+
+            for buy_tx_id, consume_qty in consumed:
+                cursor.execute(
+                    """
+                    INSERT INTO transfer_lot_matches (transfer_out_tx_id, buy_tx_id, quantity)
+                    VALUES (?, ?, ?)
+                    """,
+                    (out_tx_id, buy_tx_id, float(consume_qty)),
+                )
+
+            in_notes = f"TRANSFER_IN:from={src},ref_out={out_tx_id}"
+            if notes:
+                in_notes = f"{in_notes} | {notes}"
+
+            cursor.execute(
+                """
+                INSERT INTO transactions
+                  (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date, notes)
+                VALUES (?, ?, 'TRANSFER_IN', ?, ?, 0.0, 0.0, ?, ?)
+                """,
+                (
+                    asset_id,
+                    dst_account_id,
+                    float(qty_received),
+                    float(avg_cost_per_unit),
+                    tx_date_iso,
+                    in_notes,
+                ),
+            )
+            in_tx_id = cursor.lastrowid
+
+            conn.commit()
+            return {
+                "transfer_out_tx_id": out_tx_id,
+                "transfer_in_tx_id": in_tx_id,
+                "symbol": asset["symbol"],
+                "source_account": src,
+                "dest_account": dst,
+                "quantity_sent": quantity_sent,
+                "fee_quantity": fee_quantity,
+                "quantity_received": qty_received,
+                "avg_cost_per_unit": avg_cost_per_unit,
+                "cost_basis_moved": qty_received * avg_cost_per_unit,
+                "cost_basis_fee": fee_quantity * avg_cost_per_unit,
+                "tx_date": tx_date_iso,
+            }
         except Exception:
             conn.rollback()
             raise

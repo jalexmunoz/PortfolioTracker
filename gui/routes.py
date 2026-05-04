@@ -162,10 +162,99 @@ _FUND_FIELDS = (
     "currency", "fx_rate", "notes",
 )
 _CASH_FIELDS = ("account", "movement_date", "movement_type", "amount", "notes")
+_TRANSFER_FIELDS = (
+    "source_account", "dest_account", "symbol", "tx_date",
+    "quantity_sent", "fee_quantity", "notes",
+)
 
 
 def _raw_payload(form, fields):
     return {field: form.get(field, "") for field in fields}
+
+
+def _validate_transfer_form(form):
+    """Parse + validate Asset Transfer form. Returns dict or raises ValueError."""
+    source_account = form.get("source_account", "").strip()
+    dest_account = form.get("dest_account", "").strip()
+    symbol = form.get("symbol", "").strip().upper()
+    tx_date = form.get("tx_date", "").strip()
+    quantity_sent = _parse_decimal(form.get("quantity_sent"), "Quantity Sent")
+    fee_raw = (form.get("fee_quantity", "0") or "0").strip()
+    try:
+        fee_quantity = Decimal(fee_raw) if fee_raw else Decimal("0")
+    except InvalidOperation:
+        raise ValueError(f"Fee Quantity must be a valid number, got '{fee_raw}'")
+    notes = form.get("notes", "").strip() or None
+
+    if not source_account:
+        raise ValueError("Source Account is required")
+    if not dest_account:
+        raise ValueError("Destination Account is required")
+    if source_account == dest_account:
+        raise ValueError("Source and Destination accounts must be different")
+    if not symbol:
+        raise ValueError("Symbol is required")
+    if not tx_date:
+        raise ValueError("Date is required")
+    if quantity_sent <= 0:
+        raise ValueError("Quantity Sent must be > 0")
+    if fee_quantity < 0:
+        raise ValueError("Fee Quantity cannot be negative")
+    if fee_quantity >= quantity_sent:
+        raise ValueError("Fee Quantity must be less than Quantity Sent")
+
+    return {
+        "source_account": source_account,
+        "dest_account": dest_account,
+        "symbol": symbol,
+        "tx_date": tx_date,
+        "quantity_sent": quantity_sent,
+        "fee_quantity": fee_quantity,
+        "notes": notes,
+    }
+
+
+def _get_transfer_preview(active, parsed):
+    """Read-only: compute FIFO cost estimates for the transfer review screen."""
+    try:
+        db, _, tx_svc, _ = _get_db_and_services(active)
+        try:
+            return tx_svc.preview_asset_transfer(
+                symbol=parsed["symbol"],
+                source_account=parsed["source_account"],
+                quantity_sent=parsed["quantity_sent"],
+                fee_quantity=parsed["fee_quantity"],
+            )
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
+def _summary_transfer(parsed, preview=None):
+    qty_sent = parsed["quantity_sent"]
+    fee_qty = parsed["fee_quantity"]
+    qty_received = qty_sent - fee_qty
+    rows = [
+        ("Date", parsed["tx_date"]),
+        ("Source Account", parsed["source_account"]),
+        ("Destination Account", parsed["dest_account"]),
+        ("Symbol", parsed["symbol"]),
+        ("Quantity Sent", _format_qty(qty_sent)),
+        ("Fee Quantity", _format_qty(fee_qty)),
+        ("Quantity Received", _format_qty(qty_received)),
+    ]
+    if preview:
+        rows.append(("Est. cost basis moved", f"{_format_money(preview.get('cost_basis_moved'))} USD"))
+        rows.append(("Est. fee cost basis", f"{_format_money(preview.get('cost_basis_fee'))} USD"))
+    else:
+        rows.append(("Est. cost basis", "N/A"))
+    rows += [
+        ("Cash impact", "None"),
+        ("Realized PnL", "None"),
+        ("Notes", parsed["notes"] or "—"),
+    ]
+    return rows
 
 
 def _validate_hist_pnl_form(form):
@@ -1549,6 +1638,75 @@ def historical_pnl():
         total_adjustment=total_adjustment,
         next_url=url_for("gui.historical_pnl"),
         format_money=_format_money,
+    )
+
+
+@bp.route("/transfer-asset", methods=["GET", "POST"])
+def transfer_asset():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
+        try:
+            parsed = _validate_transfer_form(request.form)
+
+            if review_mode:
+                preview = _get_transfer_preview(active, parsed)
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review Asset Transfer",
+                    summary=_summary_transfer(parsed, preview),
+                    raw_payload=_raw_payload(request.form, _TRANSFER_FIELDS),
+                    endpoint_url=url_for("gui.transfer_asset"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=None,
+                )
+
+            backup_path, abort = _backup_before_write(
+                active, "asset_transfer", "gui.transfer_asset",
+            )
+            if abort is not None:
+                return abort
+
+            db, _, tx_svc, _ = _get_db_and_services(active)
+            from portfolio_tracker_v2.core.exceptions import InvalidTransaction
+            try:
+                result = tx_svc.record_asset_transfer(
+                    symbol=parsed["symbol"],
+                    source_account=parsed["source_account"],
+                    dest_account=parsed["dest_account"],
+                    quantity_sent=parsed["quantity_sent"],
+                    fee_quantity=parsed["fee_quantity"],
+                    tx_date=parsed["tx_date"],
+                    notes=parsed["notes"],
+                )
+                flash(
+                    f"OK: Transfer recorded. OUT tx={result['transfer_out_tx_id']},"
+                    f" IN tx={result['transfer_in_tx_id']}"
+                    f"{_backup_suffix(backup_path)}",
+                    "success",
+                )
+            except InvalidTransaction as exc:
+                flash(f"Transfer error: {exc}", "error")
+            finally:
+                db.close()
+
+        except ValueError as exc:
+            flash(str(exc), "error")
+
+        return _redirect_after_write("gui.transfer_asset")
+
+    return render_template(
+        "transfer_asset.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
     )
 
 

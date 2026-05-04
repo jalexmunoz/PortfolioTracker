@@ -312,12 +312,12 @@ class PnLService:
         WITH buy_qty AS (
             SELECT COALESCE(SUM(quantity), 0) as total
             FROM transactions
-            WHERE asset_id=? AND tx_type IN ('BUY', 'MIGRATION_BUY')
+            WHERE asset_id=? AND tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
         ),
         sell_qty AS (
             SELECT COALESCE(SUM(quantity), 0) as total
             FROM transactions
-            WHERE asset_id=? AND tx_type = 'SELL'
+            WHERE asset_id=? AND tx_type IN ('SELL', 'TRANSFER_OUT')
         )
         SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
         """
@@ -329,13 +329,13 @@ class PnLService:
             WITH buy_qty AS (
                 SELECT COALESCE(SUM(quantity), 0) as total
                 FROM transactions
-                WHERE asset_id=? AND tx_type IN ('BUY', 'MIGRATION_BUY')
+                WHERE asset_id=? AND tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
                   AND account_id = (SELECT id FROM accounts WHERE name = ?)
             ),
             sell_qty AS (
                 SELECT COALESCE(SUM(quantity), 0) as total
                 FROM transactions
-                WHERE asset_id=? AND tx_type = 'SELL'
+                WHERE asset_id=? AND tx_type IN ('SELL', 'TRANSFER_OUT')
                   AND account_id = (SELECT id FROM accounts WHERE name = ?)
             )
             SELECT buy_qty.total - sell_qty.total FROM buy_qty, sell_qty
@@ -383,9 +383,12 @@ class PnLService:
                 cursor.execute(
                     """
                     SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
-                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) +
+                           COALESCE((SELECT SUM(quantity) FROM transfer_lot_matches WHERE buy_tx_id = t.id), 0)
+                               AS matched_qty
                     FROM transactions t
-                    WHERE t.asset_id = ? AND t.account_id = (SELECT id FROM accounts WHERE name = ?) AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                    WHERE t.asset_id = ? AND t.account_id = (SELECT id FROM accounts WHERE name = ?)
+                      AND t.tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
                     (asset['id'], acct),
@@ -394,9 +397,12 @@ class PnLService:
                 cursor.execute(
                     """
                     SELECT t.id, t.quantity, t.unit_price, t.fee_usd,
-                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) as matched_qty
+                           COALESCE((SELECT SUM(quantity) FROM lot_matches WHERE buy_tx_id = t.id), 0) +
+                           COALESCE((SELECT SUM(quantity) FROM transfer_lot_matches WHERE buy_tx_id = t.id), 0)
+                               AS matched_qty
                     FROM transactions t
-                    WHERE t.asset_id = ? AND t.tx_type IN ('BUY', 'MIGRATION_BUY')
+                    WHERE t.asset_id = ?
+                      AND t.tx_type IN ('BUY', 'MIGRATION_BUY', 'TRANSFER_IN')
                     ORDER BY t.tx_date ASC, t.id ASC
                     """,
                     (asset['id'],),
