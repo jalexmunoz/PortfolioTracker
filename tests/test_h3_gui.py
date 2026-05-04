@@ -1628,15 +1628,28 @@ def test_b59a_health_band_present(gui_env):
 
 
 def test_b59a_pnl_positions_panel_renders(gui_env):
-    """P&L by Position panel renders with positions that have approved_value."""
+    """P&L by Asset panel renders with positions that have approved_value."""
     _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
     _seed_priced_position(gui_env["db_path"], "ETH", "Binance", 2.0, 6000.0, 2500.0)
     resp = gui_env["client"].get("/")
     assert resp.status_code == 200
     body = resp.data.decode("utf-8", errors="ignore")
-    assert "P&amp;L by Position" in body or "P&L by Position" in body
+    assert "P&amp;L by Asset" in body or "P&L by Asset" in body
     assert "BTC" in body
     assert "ETH" in body
+
+
+def test_pnl_by_asset_consolidates_by_symbol(gui_env):
+    """ETH split across two accounts appears once with summed P&L."""
+    # ETH in Trezor: cost 3000, value 4000 → +1000
+    _seed_priced_position(gui_env["db_path"], "ETH", "Trezor", 1.0, 3000.0, 4000.0)
+    # ETH in Phemex: cost 1500, value 4000 → +2500  (same current_price, different cost)
+    _seed_priced_position(gui_env["db_path"], "ETH", "Phemex", 0.5, 1500.0, 4000.0)
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    # ETH must appear exactly once in the P&L chart rows
+    assert body.count('class="pnl-label">ETH<') == 1
 
 
 def test_b59a_pnl_positions_shows_pos_and_neg_bars(gui_env):

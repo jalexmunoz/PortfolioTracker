@@ -161,10 +161,10 @@
       {% endif %}
     </div>
 
-    {# P&L by Position — eje central verde/rojo, top 10 por magnitud #}
+    {# P&L by Asset — consolidated by symbol, top 10 by magnitude #}
     <div class="panel">
       <div class="panel-title-row">
-        <span class="panel-title">P&amp;L by Position</span>
+        <span class="panel-title">P&amp;L by Asset</span>
         <span class="muted" style="font-size:0.78rem;">top 10 by impact</span>
       </div>
       {% if pnl_positions %}
@@ -172,7 +172,7 @@
           {% for row in pnl_positions %}
             {% set is_pos = row.unrealized_pnl >= 0 %}
             <div class="pnl-row">
-              <span class="pnl-label" title="{{ row.symbol }}{% if row.account %} — {{ row.account }}{% endif %}">{{ row.symbol }}</span>
+              <span class="pnl-label">{{ row.symbol }}</span>
               <div class="pnl-track">
                 <div class="pnl-axis-line"></div>
                 {% if is_pos %}

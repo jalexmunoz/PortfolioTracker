@@ -733,19 +733,20 @@ def dashboard():
             reverse=True,
         )[:10]
 
-        # B59A: P&L by Position — top 10 by magnitude of unrealized P&L
+        # P&L by Asset — consolidate across all accounts, top 10 by magnitude
         valued = [
             p for p in positions_list
             if p.get("approved_value") is not None and p["qty_open"] > 0
         ]
-        raw_pnl = []
+        pnl_by_symbol: dict = {}
         for p in valued:
+            sym = p["symbol"]
             upnl = Decimal(str(p["approved_value"])) - Decimal(str(p["cost_basis"]))
-            raw_pnl.append({
-                "symbol": p["symbol"],
-                "account": p["account"],
-                "unrealized_pnl": upnl,
-            })
+            pnl_by_symbol[sym] = pnl_by_symbol.get(sym, Decimal("0")) + upnl
+        raw_pnl = [
+            {"symbol": sym, "unrealized_pnl": upnl}
+            for sym, upnl in pnl_by_symbol.items()
+        ]
         raw_pnl.sort(key=lambda x: abs(x["unrealized_pnl"]), reverse=True)
         pnl_positions = raw_pnl[:10]
         pnl_max = max(
