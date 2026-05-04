@@ -133,9 +133,38 @@ def _compute_total_pnl(summary: dict) -> Decimal:
     return realized + unrealized
 
 
-def _build_breakdown_rows(s):
+_NON_MARKET_METHODS = frozenset({"snapshot_imported", "contractual_value"})
+
+
+def _classify_position_asset_class(p: dict) -> str:
+    method = p.get("valuation_method") or ""
+    if method in _NON_MARKET_METHODS:
+        return "Non-market"
+    asset_type = (p.get("asset_type") or "").lower()
+    symbol = (p.get("symbol") or "").upper()
+    if asset_type in {"crypto", "stablecoin"}:
+        return "Crypto"
+    if asset_type == "commodity" or symbol in {"GOLD", "SILVER"}:
+        return "Metals"
+    return "Equities"
+
+
+def _build_breakdown_rows(s, positions_list=None):
     breakdown = s.get("asset_class_breakdown", {}) or {}
     total_equity = Decimal(str(s.get("total_equity", 0)))
+
+    cat_cost: dict = {}
+    if positions_list:
+        for p in positions_list:
+            if (p.get("qty_open") or 0) <= 0:
+                continue
+            cat = _classify_position_asset_class(p)
+            cb = Decimal(str(p.get("cost_basis") or 0))
+            cat_cost[cat] = cat_cost.get(cat, Decimal("0")) + cb
+
+    _MARKET_CATS = {"Crypto", "Equities", "Metals"}
+    _DISPLAY_LABELS = {"Non-market": "CDTs / Fondos"}
+
     rows = []
     for asset_class in ["Crypto", "Equities", "Metals", "Non-market", "Cash"]:
         equity = Decimal(str(breakdown.get(asset_class, 0)))
@@ -143,7 +172,20 @@ def _build_breakdown_rows(s):
             pct = ((equity / total_equity) * Decimal("100")).quantize(Decimal("0.01"))
         else:
             pct = Decimal("0.00")
-        rows.append({"asset_class": asset_class, "equity": equity, "pct": pct})
+
+        pnl_pct = None
+        if asset_class in _MARKET_CATS:
+            cc = cat_cost.get(asset_class, Decimal("0"))
+            if cc > 0:
+                pnl_pct = ((equity - cc) / cc * 100).quantize(Decimal("0.01"))
+
+        rows.append({
+            "asset_class": asset_class,
+            "display_label": _DISPLAY_LABELS.get(asset_class, asset_class),
+            "equity": equity,
+            "pct": pct,
+            "pnl_pct": pnl_pct,
+        })
     return rows
 
 
@@ -804,6 +846,7 @@ def dashboard():
     load_error = None
     last_refresh_display = "No refresh yet"
     total_pnl = Decimal("0")
+    alloc_footer = None
 
     try:
         db, _, tx_svc, pnl_svc = _get_db_and_services(active)
@@ -815,7 +858,7 @@ def dashboard():
         finally:
             db.close()
 
-        breakdown_rows = _build_breakdown_rows(summary)
+        breakdown_rows = _build_breakdown_rows(summary, positions_list)
         top_positions = sorted(
             [p for p in positions_list if p.get("approved_value") is not None and p["qty_open"] > 0],
             key=lambda p: Decimal(str(p["approved_value"])),
@@ -870,6 +913,13 @@ def dashboard():
         unavailable = int(counts.get("unavailable", 0) or 0)
         unvalued = int(summary.get("unvalued_positions", 0) or 0)
         total_pnl = _compute_total_pnl(summary)
+        total_cost = Decimal(str(summary.get("total_cost_basis") or 0))
+        alloc_footer = None
+        if total_cost > 0:
+            net_pct = (total_pnl / total_cost * 100).quantize(Decimal("0.01"))
+            alloc_footer = {"total_invested": total_cost, "net_pct": net_pct}
+        elif summary:
+            alloc_footer = {"total_invested": Decimal("0"), "net_pct": None}
         if stale:
             warnings.append(f"{stale} position(s) have stale prices.")
         if unavailable:
@@ -896,6 +946,7 @@ def dashboard():
         load_error=load_error,
         last_refresh_display=last_refresh_display,
         total_pnl=total_pnl,
+        alloc_footer=alloc_footer,
         format_money=_format_money,
         format_qty=_format_qty,
     )

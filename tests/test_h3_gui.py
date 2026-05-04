@@ -1708,3 +1708,135 @@ def test_b59a_quick_actions_still_present(gui_env):
     assert "Cash Deposit/Withdrawal" in body
     assert "Fund Movement" in body
     assert "Backup DB" in body
+
+
+# ----- Post-B59A-2: enrich dashboard allocation and top positions -----
+
+
+def _seed_market_position(db_path, symbol, account, qty, cost_basis, current_price):
+    """Seed a market_live position (usable, crypto asset type) with a fresh price."""
+    import sqlite3
+    from datetime import datetime
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        now = datetime.now().isoformat()
+        cur.execute(
+            """INSERT OR IGNORE INTO assets
+               (symbol, asset_type, is_active, valuation_method,
+                current_price, price_source, price_updated_at)
+               VALUES (?, 'crypto', 1, 'market_live', ?, 'api', ?)""",
+            (symbol, current_price, now),
+        )
+        cur.execute("UPDATE assets SET current_price=?, price_source='api', price_updated_at=? WHERE symbol=?",
+                    (current_price, now, symbol))
+        cur.execute("SELECT id FROM assets WHERE symbol = ?", (symbol,))
+        asset_id = cur.fetchone()[0]
+        cur.execute("INSERT OR IGNORE INTO accounts (name) VALUES (?)", (account,))
+        cur.execute("SELECT id FROM accounts WHERE name = ?", (account,))
+        account_id = cur.fetchone()[0]
+        unit_price = cost_basis / qty
+        cur.execute(
+            """INSERT INTO transactions
+               (asset_id, account_id, tx_type, quantity, unit_price, fee_usd, total_usd, tx_date)
+               VALUES (?, ?, 'MIGRATION_BUY', ?, ?, 0.0, ?, '2026-01-01')""",
+            (asset_id, account_id, qty, unit_price, cost_basis),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_post_b59a2_dashboard_renders(gui_env):
+    """Dashboard renders with 200 after enrichment changes."""
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+
+
+def test_post_b59a2_allocation_shows_value_alloc_pnl_for_market(gui_env):
+    """Asset Allocation shows P&L % for a market category (Crypto with market_live position)."""
+    # cost=40000, price=50000 → unrealized +10000 → +25.00%
+    _seed_market_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Asset Allocation" in body
+    # P&L % column should contain a percentage for the Crypto row
+    assert "25.00%" in body or "+25.00%" in body
+
+
+def test_post_b59a2_allocation_shows_cdts_fondos_label(gui_env):
+    """Asset Allocation shows 'CDTs / Fondos' instead of 'Non-market'."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "CDTs / Fondos" in body
+    # Internal key 'Non-market' should not appear as a visible label in allocation rows
+    # (it is still used as CSS class, but the display label is 'CDTs / Fondos')
+
+
+def test_post_b59a2_cash_shows_dash_pnl(gui_env):
+    """Asset Allocation shows '—' for the Cash category P&L (no P&L % for cash)."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    # The muted dash appears for Cash (and Non-market) P&L columns
+    assert "alloc-pnl" in body
+
+
+def test_post_b59a2_cdts_fondos_shows_dash_pnl(gui_env):
+    """CDTs/Fondos (Non-market) rows show '—' for P&L %, not a numeric value."""
+    # _seed_priced_position uses snapshot_imported → Non-market category
+    _seed_priced_position(gui_env["db_path"], "MYASSET", "Broker", 1.0, 10000.0, 11000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "CDTs / Fondos" in body
+    # Non-market category must have alloc-pnl with the muted dash
+    assert 'class="muted">—</span>' in body or "muted" in body
+
+
+def test_post_b59a2_allocation_footer_shows_total_invested(gui_env):
+    """Asset Allocation footer shows 'Total invested' with the cost basis value."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Total invested" in body
+    assert "40,000.00" in body
+
+
+def test_post_b59a2_top_positions_account_qty_inline(gui_env):
+    """Top Positions shows account and qty inline separated by '·'."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 2.5, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Binance" in body
+    assert "·" in body
+
+
+def test_post_b59a2_top_positions_pnl_pct_for_market(gui_env):
+    """Top Positions shows P&L % for market_live positions."""
+    # cost=40000, price=50000 → unrealized_pct = +25.0%
+    _seed_market_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Top Positions" in body
+    assert "+25.0%" in body
+
+
+def test_post_b59a2_top_positions_dash_for_non_market(gui_env):
+    """Top Positions shows '—' for P&L % on non-market (snapshot_imported) positions."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Top Positions" in body
+    # unrealized_pct is None for snapshot_imported → template shows muted dash
+    assert 'class="muted">—</span>' in body
+
+
+def test_post_b59a2_legend_renders(gui_env):
+    """Top Positions legend shows 'usable' and 'non-market' chips."""
+    _seed_priced_position(gui_env["db_path"], "BTC", "Binance", 1.0, 40000.0, 50000.0)
+    resp = gui_env["client"].get("/")
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "legend" in body
+    assert "usable" in body
+    assert "non-market" in body

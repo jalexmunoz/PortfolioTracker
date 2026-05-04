@@ -137,7 +137,7 @@
   {# ══════════════════════════════════════════════════════ #}
   <div class="row-2">
 
-    {# Asset Allocation — barras horizontales con categoría, barra, monto y % #}
+    {# Asset Allocation — barras horizontales con categoría, barra, monto, % y P&L % #}
     <div class="panel">
       <div class="panel-title-row">
         <span class="panel-title">Asset Allocation</span>
@@ -147,15 +147,30 @@
         <div class="bar-chart">
           {% for r in breakdown_rows %}
             <div class="alloc-row">
-              <span class="bar-label">{{ r.asset_class }}</span>
+              <span class="bar-label">{{ r.display_label }}</span>
               <div class="bar-track">
                 <div class="bar-fill cls-{{ r.asset_class }}" style="width: {{ r.pct }}%;"></div>
               </div>
               <span class="alloc-amount">{{ format_money(r.equity) }}</span>
               <span class="bar-pct">{{ r.pct }}%</span>
+              <span class="alloc-pnl">
+                {%- if r.pnl_pct is not none -%}
+                  <span class="{{ 'value-pos' if r.pnl_pct >= 0 else 'value-neg' }}">{% if r.pnl_pct >= 0 %}+{% endif %}{{ r.pnl_pct }}%</span>
+                {%- else -%}
+                  <span class="muted">—</span>
+                {%- endif -%}
+              </span>
             </div>
           {% endfor %}
         </div>
+        {% if alloc_footer %}
+          <div class="alloc-footer">
+            <span>Total invested: <strong>{{ format_money(alloc_footer.total_invested) }}</strong></span>
+            {% if alloc_footer.net_pct is not none %}
+              <span class="{{ 'value-pos' if alloc_footer.net_pct >= 0 else 'value-neg' }}">Net {{ alloc_footer.net_pct }}%</span>
+            {% endif %}
+          </div>
+        {% endif %}
       {% else %}
         <p class="muted">No equity to allocate. Add positions or fund movements to populate.</p>
       {% endif %}
@@ -199,7 +214,7 @@
   {# ══════════════════════════════════════════════════════ #}
   <div class="row-2">
 
-    {# Top Positions — status dot compacto #}
+    {# Top Positions — status dot compacto con account·qty y P&L % #}
     <div class="panel">
       <div class="panel-title-row">
         <span class="panel-title">Top Positions</span>
@@ -212,8 +227,9 @@
               <tr>
                 <th style="width:18px;"></th>
                 <th>Symbol</th>
-                <th>Account</th>
+                <th>Account · Qty</th>
                 <th class="num">Value</th>
+                <th class="num">P&amp;L %</th>
               </tr>
             </thead>
             <tbody>
@@ -223,12 +239,23 @@
                   <span class="status-dot dot-{{ p.valuation_status }}" title="{{ p.valuation_status }}"></span>
                 </td>
                 <td><strong>{{ p.symbol }}</strong></td>
-                <td class="muted" style="font-size:0.82rem;">{{ p.account or '—' }}</td>
+                <td class="muted" style="font-size:0.82rem;">{{ p.account or '—' }} · {{ format_qty(p.qty_open) }}</td>
                 <td class="num">{{ format_money(p.approved_value) }}</td>
+                <td class="num" style="font-size:0.8rem;">
+                  {%- if p.unrealized_pct is not none -%}
+                    <span class="{{ 'value-pos' if p.unrealized_pct >= 0 else 'value-neg' }}">{% if p.unrealized_pct >= 0 %}+{% endif %}{{ "%.1f"|format(p.unrealized_pct|float) }}%</span>
+                  {%- else -%}
+                    <span class="muted">—</span>
+                  {%- endif -%}
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="legend">
+          <span class="legend-chip"><span class="status-dot dot-usable"></span> usable</span>
+          <span class="legend-chip"><span class="status-dot dot-usable_non_market"></span> non-market</span>
         </div>
       {% else %}
         <p class="muted">No valued positions yet. Run import legacy or add a BUY.</p>

@@ -688,10 +688,10 @@ hr.soft { border: none; border-top: 1px solid var(--border-soft); margin: 0.8rem
   align-self: center;
 }
 
-/* Zone 3 left — Asset Allocation 4-col row */
+/* Zone 3 left — Asset Allocation 5-col row: label | bar | amount | pct | pnl% */
 .alloc-row {
   display: grid;
-  grid-template-columns: 90px 1fr 88px 50px;
+  grid-template-columns: 90px 1fr 88px 48px 56px;
   gap: 0.5rem;
   align-items: center;
   font-size: 0.84rem;
@@ -701,6 +701,24 @@ hr.soft { border: none; border-top: 1px solid var(--border-soft); margin: 0.8rem
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: 0.8rem;
+  color: var(--text-2);
+}
+
+.alloc-pnl {
+  text-align: right;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.alloc-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.6rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-soft);
+  font-size: 0.78rem;
   color: var(--text-2);
 }
 
