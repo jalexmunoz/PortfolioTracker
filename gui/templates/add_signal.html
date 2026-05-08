@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block page_title %}{% if review %}Review Signal{% else %}Add Signal{% endif %}{% endblock %}
+
+{% block content %}
+
+{% if not review %}
+{# ══════════════ Entry form ══════════════ #}
+<div class="panel">
+  <div class="panel-title">Add Signal / Alert</div>
+  <p class="muted" style="margin-top:0.3rem;">Register a market regime signal or manual alert. Does not affect positions, cash, or PnL.</p>
+</div>
+
+<div class="panel">
+  <form method="post" action="{{ url_for('gui.signals_add') }}">
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+
+      <div class="form-group">
+        <label>Event Time <span class="req">*</span></label>
+        <input type="datetime-local" name="event_time"
+               value="{{ form_data.get('event_time', '') }}"
+               required style="width:100%;">
+        <span class="hint">When the signal occurred (local time).</span>
+      </div>
+
+      <div class="form-group">
+        <label>Source <span class="req">*</span></label>
+        <select name="source" style="width:100%;">
+          {% for src in sources %}
+            <option value="{{ src }}" {{ 'selected' if form_data.get('source') == src else '' }}>{{ src }}</option>
+          {% endfor %}
+          <option value="manual" {{ 'selected' if not form_data.get('source') else '' }}>manual</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Event Type <span class="req">*</span></label>
+        <select name="event_type" style="width:100%;">
+          {% for et in event_types %}
+            <option value="{{ et }}" {{ 'selected' if form_data.get('event_type') == et else '' }}>{{ et }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label>Severity <span class="req">*</span></label>
+        <select name="severity" style="width:100%;">
+          {% for sv in severities %}
+            <option value="{{ sv }}" {{ 'selected' if form_data.get('severity', 'INFO') == sv else '' }}>{{ sv }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="form-group" style="grid-column: 1 / -1;">
+        <label>Message</label>
+        <input type="text" name="message"
+               value="{{ form_data.get('message', '') }}"
+               placeholder="Short description of the signal"
+               style="width:100%;">
+      </div>
+
+      <div class="form-group" style="grid-column: 1 / -1;">
+        <label>Notes</label>
+        <textarea name="notes" rows="2" placeholder="Optional context or observations" style="width:100%;">{{ form_data.get('notes', '') }}</textarea>
+      </div>
+
+    </div>
+
+    <div class="actions-inline" style="margin-top:1rem;">
+      <button type="submit" class="qa-btn qa-primary">Review →</button>
+      <a href="{{ url_for('gui.signals') }}" class="qa-btn">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% else %}
+{# ══════════════ Review / confirm ══════════════ #}
+<div class="panel">
+  <div class="panel-title">Review Signal</div>
+  <p class="muted" style="margin-top:0.3rem;">Confirm the details below. Click <strong>Confirm Add</strong> to write to the database (a backup will be created automatically).</p>
+</div>
+
+<div class="panel">
+  <table style="width:100%; border-collapse:collapse;">
+    <tbody>
+      <tr><td class="muted" style="width:160px; padding:0.4rem 0;">Event Time</td><td><strong>{{ parsed.event_time }}</strong></td></tr>
+      <tr><td class="muted" style="padding:0.4rem 0;">Source</td><td>{{ parsed.source }}</td></tr>
+      <tr><td class="muted" style="padding:0.4rem 0;">Event Type</td><td>{{ parsed.event_type }}</td></tr>
+      <tr><td class="muted" style="padding:0.4rem 0;">Severity</td>
+          <td><span class="badge-severity sev-{{ parsed.severity | lower }}">{{ parsed.severity }}</span></td></tr>
+      <tr><td class="muted" style="padding:0.4rem 0;">Message</td><td>{{ parsed.message or '—' }}</td></tr>
+      <tr><td class="muted" style="padding:0.4rem 0;">Notes</td><td>{{ parsed.notes or '—' }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="panel">
+  <div class="actions-inline">
+    <form method="post" action="{{ url_for('gui.signals_add_submit') }}">
+      {% for key, value in raw_payload.items() %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+      {% endfor %}
+      <button type="submit" class="qa-btn qa-primary">Confirm Add</button>
+    </form>
+    <a href="{{ url_for('gui.signals_add') }}" class="qa-btn">← Edit</a>
+    <a href="{{ url_for('gui.signals') }}" class="qa-btn">Cancel</a>
+  </div>
+</div>
+
+{% endif %}
+
+<style>
+.form-group { display:flex; flex-direction:column; gap:0.3rem; }
+.form-group label { font-size:0.82rem; color:var(--text-2); }
+.form-group .hint { font-size:0.75rem; color:var(--text-3); }
+.form-group input, .form-group select, .form-group textarea {
+  background:var(--bg-2); border:1px solid var(--border);
+  border-radius:4px; color:var(--text-1); padding:0.4rem 0.6rem; font-size:0.9rem;
+}
+.req { color: var(--negative, #e84040); }
+</style>
+
+{% endblock %}

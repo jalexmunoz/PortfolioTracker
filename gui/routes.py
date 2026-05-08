@@ -907,6 +907,8 @@ def dashboard():
     last_refresh_display = "No refresh yet"
     total_pnl = Decimal("0")
     alloc_footer = None
+    recent_signals = []
+    open_signal_count = 0
 
     try:
         db, _, tx_svc, pnl_svc = _get_db_and_services(active)
@@ -915,6 +917,14 @@ def dashboard():
             summary = pnl_svc.summary()
             tx_count = len(tx_svc.list_transactions(limit=10000))
             last_refresh_display = _format_last_refresh(_get_last_price_refresh(db))
+            try:
+                from portfolio_tracker_v2.services.signal_svc import SignalService
+                sig_svc = SignalService(db)
+                recent_signals = sig_svc.recent_open_signals(limit=5)
+                open_signal_count = sig_svc.count_open_signals()
+            except Exception:
+                recent_signals = []
+                open_signal_count = 0
         finally:
             db.close()
 
@@ -1007,6 +1017,8 @@ def dashboard():
         last_refresh_display=last_refresh_display,
         total_pnl=total_pnl,
         alloc_footer=alloc_footer,
+        recent_signals=recent_signals,
+        open_signal_count=open_signal_count,
         format_money=_format_money,
         format_qty=_format_qty,
     )
@@ -2087,3 +2099,224 @@ def daily_report():
         format_money=_format_money,
         format_qty=_format_qty,
     )
+
+
+# ---------------------------------------------------------------------------
+# B62A — Signals / Alerts
+# ---------------------------------------------------------------------------
+
+_SIGNAL_SOURCES = [
+    "tradingview_macro", "portfolio_rule", "manual", "system",
+]
+_SIGNAL_EVENT_TYPES = [
+    "confirmed_downgrade", "confirmed_upgrade", "hard_risk_off_activated",
+    "fast_early_warning_downgrade", "risk_on", "caution", "risk_off",
+    "stress", "oversold", "stretched", "custom",
+]
+_SIGNAL_SEVERITIES = ["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+_SIGNAL_STATUSES = ["OPEN", "RESOLVED", "IGNORED"]
+_SIGNAL_FIELDS = ("event_time", "source", "event_type", "severity", "message", "notes")
+
+
+def _get_signal_svc(active):
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.services.signal_svc import SignalService
+    db = Database(active.db_path)
+    return db, SignalService(db)
+
+
+def _validate_signal_form(form):
+    """Parse + validate the add-signal form. Returns dict or raises ValueError."""
+    event_time = (form.get("event_time") or "").strip()
+    if not event_time:
+        raise ValueError("event_time is required")
+    source = (form.get("source") or "").strip()
+    if not source:
+        raise ValueError("source is required")
+    event_type = (form.get("event_type") or "").strip()
+    if not event_type:
+        raise ValueError("event_type is required")
+    severity = (form.get("severity") or "INFO").strip().upper()
+    from portfolio_tracker_v2.services.signal_svc import VALID_SEVERITIES
+    if severity not in VALID_SEVERITIES:
+        raise ValueError(f"Invalid severity '{severity}'")
+    return {
+        "event_time": event_time,
+        "source": source,
+        "event_type": event_type,
+        "severity": severity,
+        "message": (form.get("message") or "").strip(),
+        "notes": (form.get("notes") or "").strip() or None,
+    }
+
+
+@bp.get("/signals")
+def signals():
+    active = load_active_db()
+    if active is None:
+        return render_template(
+            "signals.html",
+            active=None,
+            active_section="signals",
+            rows=[],
+            filters={},
+            sources=_SIGNAL_SOURCES,
+            severities=_SIGNAL_SEVERITIES,
+            statuses=_SIGNAL_STATUSES,
+        )
+
+    status_f = request.args.get("status", "").strip().upper() or None
+    severity_f = request.args.get("severity", "").strip().upper() or None
+    source_f = request.args.get("source", "").strip() or None
+
+    db, sig_svc = _get_signal_svc(active)
+    try:
+        rows = sig_svc.list_signals(status=status_f, severity=severity_f, source=source_f)
+    finally:
+        db.close()
+
+    return render_template(
+        "signals.html",
+        active=active,
+        active_section="signals",
+        rows=rows,
+        filters={"status": status_f or "", "severity": severity_f or "", "source": source_f or ""},
+        sources=_SIGNAL_SOURCES,
+        severities=_SIGNAL_SEVERITIES,
+        statuses=_SIGNAL_STATUSES,
+        event_types=_SIGNAL_EVENT_TYPES,
+    )
+
+
+@bp.route("/signals/add", methods=["GET", "POST"])
+def signals_add():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        try:
+            parsed = _validate_signal_form(request.form)
+        except ValueError as exc:
+            flash(str(exc), "error")
+            return render_template(
+                "add_signal.html",
+                active=active,
+                active_section="signals",
+                review=False,
+                form_data=dict(request.form),
+                sources=_SIGNAL_SOURCES,
+                event_types=_SIGNAL_EVENT_TYPES,
+                severities=_SIGNAL_SEVERITIES,
+            )
+
+        return render_template(
+            "add_signal.html",
+            active=active,
+            active_section="signals",
+            review=True,
+            parsed=parsed,
+            raw_payload=_raw_payload(request.form, _SIGNAL_FIELDS),
+            sources=_SIGNAL_SOURCES,
+            event_types=_SIGNAL_EVENT_TYPES,
+            severities=_SIGNAL_SEVERITIES,
+        )
+
+    return render_template(
+        "add_signal.html",
+        active=active,
+        active_section="signals",
+        review=False,
+        form_data={},
+        sources=_SIGNAL_SOURCES,
+        event_types=_SIGNAL_EVENT_TYPES,
+        severities=_SIGNAL_SEVERITIES,
+    )
+
+
+@bp.route("/signals/add/submit", methods=["POST"])
+def signals_add_submit():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    try:
+        parsed = _validate_signal_form(request.form)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("gui.signals_add"))
+
+    backup_path, abort = _backup_before_write(active, "add_signal", "gui.signals")
+    if abort is not None:
+        return abort
+
+    db, sig_svc = _get_signal_svc(active)
+    try:
+        sig_id = sig_svc.add_signal(
+            event_time=parsed["event_time"],
+            source=parsed["source"],
+            event_type=parsed["event_type"],
+            severity=parsed["severity"],
+            message=parsed["message"],
+            notes=parsed["notes"],
+        )
+        flash(
+            f"Signal #{sig_id} added{_backup_suffix(backup_path)}",
+            "success",
+        )
+    except Exception as exc:
+        flash(f"Error adding signal: {exc}", "error")
+    finally:
+        db.close()
+
+    return redirect(url_for("gui.signals"))
+
+
+@bp.route("/signals/<int:signal_id>/resolve", methods=["POST"])
+def signals_resolve(signal_id: int):
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    backup_path, abort = _backup_before_write(active, "resolve_signal", "gui.signals")
+    if abort is not None:
+        return abort
+
+    db, sig_svc = _get_signal_svc(active)
+    try:
+        found = sig_svc.update_signal_status(signal_id, "RESOLVED")
+        if found:
+            flash(f"Signal #{signal_id} marked RESOLVED{_backup_suffix(backup_path)}", "success")
+        else:
+            flash(f"Signal #{signal_id} not found", "error")
+    except Exception as exc:
+        flash(f"Error: {exc}", "error")
+    finally:
+        db.close()
+
+    return redirect(url_for("gui.signals"))
+
+
+@bp.route("/signals/<int:signal_id>/ignore", methods=["POST"])
+def signals_ignore(signal_id: int):
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    backup_path, abort = _backup_before_write(active, "ignore_signal", "gui.signals")
+    if abort is not None:
+        return abort
+
+    db, sig_svc = _get_signal_svc(active)
+    try:
+        found = sig_svc.update_signal_status(signal_id, "IGNORED")
+        if found:
+            flash(f"Signal #{signal_id} marked IGNORED{_backup_suffix(backup_path)}", "success")
+        else:
+            flash(f"Signal #{signal_id} not found", "error")
+    except Exception as exc:
+        flash(f"Error: {exc}", "error")
+    finally:
+        db.close()
+
+    return redirect(url_for("gui.signals"))

@@ -289,6 +289,32 @@
   </div>
 
   {# ══════════════════════════════════════════════════════ #}
+  {# Zona 4b — Recent Signals (informational, compact)     #}
+  {# ══════════════════════════════════════════════════════ #}
+  {% if recent_signals %}
+  <div class="panel">
+    <div class="panel-title-row">
+      <span class="panel-title">Recent Signals
+        {% if open_signal_count %}
+          <span style="font-size:0.75rem; color:var(--text-2); font-weight:400; margin-left:0.4rem;">({{ open_signal_count }} open)</span>
+        {% endif %}
+      </span>
+      <a href="{{ url_for('gui.signals') }}" class="muted" style="font-size:0.78rem;">view all &rarr;</a>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:0.4rem; margin-top:0.4rem;">
+      {% for sig in recent_signals %}
+      <div style="display:flex; align-items:center; gap:0.6rem; font-size:0.82rem; padding:0.3rem 0; border-bottom:1px solid var(--border);">
+        <span class="badge-severity sev-{{ sig.severity | lower }}" style="flex-shrink:0;">{{ sig.severity }}</span>
+        <span style="color:var(--text-2); flex-shrink:0; white-space:nowrap;">{{ sig.event_time[:10] if sig.event_time else '—' }}</span>
+        <span style="color:var(--text-1); font-weight:500;">{{ sig.event_type }}</span>
+        <span class="muted" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ sig.source }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ══════════════════════════════════════════════════════ #}
   {# Zona 5 — Acciones operativas (secundario, al fondo)   #}
   {# ══════════════════════════════════════════════════════ #}
   <div class="panel">

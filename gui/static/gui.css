@@ -827,3 +827,29 @@ hr.soft { border: none; border-top: 1px solid var(--border-soft); margin: 0.8rem
   font-size: 0.8rem;
   color: var(--text-2);
 }
+
+/* B62A — Signal severity and status badges */
+.badge-severity {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sev-info     { background: var(--bg-3); color: var(--text-2); }
+.sev-low      { background: #1a3a5c; color: #7ab8e8; }
+.sev-medium   { background: #3d3000; color: #e8c840; }
+.sev-high     { background: #3d1a00; color: #e88040; }
+.sev-critical { background: #3d0000; color: #e84040; }
+
+.badge-status {
+  display: inline-block;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.st-open     { background: #1a3a1a; color: #60c060; }
+.st-resolved { background: var(--bg-3); color: var(--text-3); }
+.st-ignored  { background: var(--bg-2); color: var(--text-3); }

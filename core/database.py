@@ -185,6 +185,7 @@ class Database:
             self._ensure_assets_schema_extensions()
             self._ensure_historical_pnl_schema()
             self._ensure_transfer_schema()
+            self._ensure_signal_alerts_schema()
             self.commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Schema initialization failed: {e}")
@@ -247,5 +248,40 @@ class Database:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_tlm_buy ON transfer_lot_matches(buy_tx_id)"
+        )
+        conn.commit()
+
+    def _ensure_signal_alerts_schema(self) -> None:
+        """Create signal_alerts table and indexes if missing. Safe migration for existing DBs."""
+        conn = self.connect()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_alerts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+                event_time  TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                severity    TEXT NOT NULL DEFAULT 'INFO',
+                regime      TEXT,
+                score       REAL,
+                symbol      TEXT,
+                asset_class TEXT,
+                message     TEXT,
+                payload_json TEXT,
+                status      TEXT NOT NULL DEFAULT 'OPEN',
+                resolved_at TEXT,
+                notes       TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sa_status   ON signal_alerts(status, event_time DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sa_severity ON signal_alerts(severity, event_time DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sa_source   ON signal_alerts(source, event_time DESC)"
         )
         conn.commit()

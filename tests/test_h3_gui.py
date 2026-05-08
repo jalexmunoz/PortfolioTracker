@@ -1840,3 +1840,244 @@ def test_post_b59a2_legend_renders(gui_env):
     assert "legend" in body
     assert "usable" in body
     assert "non-market" in body
+
+
+# ===========================================================================
+# B62A — Signals / Alerts GUI tests
+# ===========================================================================
+
+from portfolio_tracker_v2.services.signal_svc import SignalService
+from portfolio_tracker_v2.core.database import Database as _Database
+
+
+def _add_signal_direct(db_path: str, **kwargs) -> int:
+    """Helper: add a signal directly via service (bypasses HTTP)."""
+    db = _Database(db_path)
+    db.connect()
+    svc = SignalService(db)
+    sig_id = svc.add_signal(**kwargs)
+    db.close()
+    return sig_id
+
+
+# ---------------------------------------------------------------------------
+# 15. GET /signals renders
+# ---------------------------------------------------------------------------
+
+def test_signals_page_renders(gui_env):
+    resp = gui_env["client"].get("/signals")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Signal" in body
+
+
+def test_signals_page_no_db_renders(gui_no_db):
+    resp = gui_no_db.get("/signals")
+    assert resp.status_code == 200
+    assert b"No active DB" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# 16. Add signal GET and review (no write)
+# ---------------------------------------------------------------------------
+
+def test_add_signal_get_renders(gui_env):
+    resp = gui_env["client"].get("/signals/add")
+    assert resp.status_code == 200
+    assert b"Add Signal" in resp.data
+
+
+def test_add_signal_review_does_not_write(gui_env):
+    """POST to /signals/add (review step) must not create a row in the DB."""
+    resp = gui_env["client"].post(
+        "/signals/add",
+        data={
+            "event_time": "2026-05-08T10:00",
+            "source": "tradingview_macro",
+            "event_type": "hard_risk_off_activated",
+            "severity": "HIGH",
+            "message": "Hard risk-off test",
+            "notes": "",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "Review" in body or "Confirm" in body
+
+    db = _Database(gui_env["db_path"])
+    db.connect()
+    count = db.connect().execute("SELECT COUNT(*) FROM signal_alerts").fetchone()[0]
+    db.close()
+    assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# 17. Confirm submit writes exactly one row
+# ---------------------------------------------------------------------------
+
+def test_add_signal_confirm_writes_once(gui_env):
+    resp = gui_env["client"].post(
+        "/signals/add/submit",
+        data={
+            "event_time": "2026-05-08T10:00:00",
+            "source": "tradingview_macro",
+            "event_type": "hard_risk_off_activated",
+            "severity": "HIGH",
+            "message": "Hard risk-off test",
+            "notes": "",
+        },
+    )
+    assert resp.status_code in (302, 303)
+
+    db = _Database(gui_env["db_path"])
+    db.connect()
+    count = db.connect().execute("SELECT COUNT(*) FROM signal_alerts").fetchone()[0]
+    db.close()
+    assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 18. Backup created before write
+# ---------------------------------------------------------------------------
+
+def test_backup_created_before_signal_write(gui_env):
+    auto_backup_dir = os.path.join(gui_env["instance_path"], "backups")
+
+    before = set(Path(auto_backup_dir).glob("*")) if Path(auto_backup_dir).exists() else set()
+
+    gui_env["client"].post(
+        "/signals/add/submit",
+        data={
+            "event_time": "2026-05-08T11:00:00",
+            "source": "manual",
+            "event_type": "custom",
+            "severity": "INFO",
+            "message": "backup test",
+            "notes": "",
+        },
+    )
+
+    after = set(Path(auto_backup_dir).glob("*")) if Path(auto_backup_dir).exists() else set()
+    assert len(after) > len(before), "Expected a backup file to be created before write"
+
+
+# ---------------------------------------------------------------------------
+# 19. Dashboard renders with signals present
+# ---------------------------------------------------------------------------
+
+def test_dashboard_renders_with_signals(gui_env):
+    _add_signal_direct(
+        gui_env["db_path"],
+        event_time="2026-05-08T09:00:00",
+        source="tradingview_macro",
+        event_type="hard_risk_off_activated",
+        severity="HIGH",
+        message="Dashboard test signal",
+    )
+    resp = gui_env["client"].get("/")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    assert "hard_risk_off_activated" in body
+
+
+# ---------------------------------------------------------------------------
+# 20. Dashboard does not break if SignalService would fail
+# ---------------------------------------------------------------------------
+
+def test_dashboard_tolerant_when_no_signal_table(tmp_path):
+    """A DB that somehow has no signal_alerts table must not break the dashboard."""
+    instance_path = tmp_path / "instance"
+    instance_path.mkdir()
+
+    db_path = tmp_path / "no_signals.db"
+    db = _Database(str(db_path))
+    db.connect()
+    db.init_schema()
+    # Drop the signal_alerts table to simulate pre-B62A DB
+    db.connect().execute("DROP TABLE IF EXISTS signal_alerts")
+    db.commit()
+    db.close()
+
+    state = {"db_path": str(db_path), "mode": "TEST"}
+    (instance_path / "gui_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    app = create_app(instance_path=str(instance_path))
+    app.config.update({"TESTING": True})
+    client = app.test_client()
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"PortfolioTracker" in resp.data
+
+
+# ---------------------------------------------------------------------------
+# 21. Mark resolved changes status
+# ---------------------------------------------------------------------------
+
+def test_mark_resolved_changes_status(gui_env):
+    sig_id = _add_signal_direct(
+        gui_env["db_path"],
+        event_time="2026-05-08T10:00:00",
+        source="manual",
+        event_type="caution",
+        severity="LOW",
+        message="to be resolved",
+    )
+
+    resp = gui_env["client"].post(f"/signals/{sig_id}/resolve")
+    assert resp.status_code in (302, 303)
+
+    db = _Database(gui_env["db_path"])
+    db.connect()
+    row = db.connect().execute(
+        "SELECT status FROM signal_alerts WHERE id = ?", (sig_id,)
+    ).fetchone()
+    db.close()
+    assert row["status"] == "RESOLVED"
+
+
+# ---------------------------------------------------------------------------
+# 22. Mark ignored changes status
+# ---------------------------------------------------------------------------
+
+def test_mark_ignored_changes_status(gui_env):
+    sig_id = _add_signal_direct(
+        gui_env["db_path"],
+        event_time="2026-05-08T10:00:00",
+        source="manual",
+        event_type="caution",
+        severity="LOW",
+        message="to be ignored",
+    )
+
+    resp = gui_env["client"].post(f"/signals/{sig_id}/ignore")
+    assert resp.status_code in (302, 303)
+
+    db = _Database(gui_env["db_path"])
+    db.connect()
+    row = db.connect().execute(
+        "SELECT status FROM signal_alerts WHERE id = ?", (sig_id,)
+    ).fetchone()
+    db.close()
+    assert row["status"] == "IGNORED"
+
+
+# ---------------------------------------------------------------------------
+# 23. Backup created before mark resolved
+# ---------------------------------------------------------------------------
+
+def test_backup_created_before_resolve(gui_env):
+    sig_id = _add_signal_direct(
+        gui_env["db_path"],
+        event_time="2026-05-08T10:00:00",
+        source="manual",
+        event_type="caution",
+        severity="LOW",
+    )
+    auto_backup_dir = os.path.join(gui_env["instance_path"], "backups")
+    before = set(Path(auto_backup_dir).glob("*")) if Path(auto_backup_dir).exists() else set()
+
+    gui_env["client"].post(f"/signals/{sig_id}/resolve")
+
+    after = set(Path(auto_backup_dir).glob("*")) if Path(auto_backup_dir).exists() else set()
+    assert len(after) > len(before), "Expected backup before resolve"

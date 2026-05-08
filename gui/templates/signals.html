@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block page_title %}Signals / Alerts{% endblock %}
+
+{% block content %}
+
+{% if active is none %}
+  <div class="banner banner-warn">
+    <strong>No active DB</strong>
+    <span>Select a database from <a href="{{ url_for('gui.setup') }}">Setup</a> to view signals.</span>
+  </div>
+
+{% else %}
+
+<div class="panel">
+  <div class="panel-title-row">
+    <span class="panel-title">Signal / Alert Log</span>
+    <a href="{{ url_for('gui.signals_add') }}" class="qa-btn qa-primary">+ Add Signal</a>
+  </div>
+  <p class="muted" style="margin-top: 0.4rem;">Informational log of market regime signals and manual alerts. Does not affect positions, cash, or PnL.</p>
+</div>
+
+{# ── Filters ── #}
+<div class="panel">
+  <form method="get" action="{{ url_for('gui.signals') }}" style="display:flex; gap: 0.8rem; flex-wrap: wrap; align-items: flex-end;">
+    <div style="display:flex; flex-direction:column; gap:0.25rem;">
+      <label style="font-size:0.78rem; color:var(--text-2);">Status</label>
+      <select name="status" style="padding:0.35rem 0.6rem; font-size:0.85rem; background:var(--bg-2); border:1px solid var(--border); border-radius:4px; color:var(--text-1);">
+        <option value="">All</option>
+        {% for s in statuses %}
+          <option value="{{ s }}" {{ 'selected' if filters.status == s else '' }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:0.25rem;">
+      <label style="font-size:0.78rem; color:var(--text-2);">Severity</label>
+      <select name="severity" style="padding:0.35rem 0.6rem; font-size:0.85rem; background:var(--bg-2); border:1px solid var(--border); border-radius:4px; color:var(--text-1);">
+        <option value="">All</option>
+        {% for sv in severities %}
+          <option value="{{ sv }}" {{ 'selected' if filters.severity == sv else '' }}>{{ sv }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:0.25rem;">
+      <label style="font-size:0.78rem; color:var(--text-2);">Source</label>
+      <select name="source" style="padding:0.35rem 0.6rem; font-size:0.85rem; background:var(--bg-2); border:1px solid var(--border); border-radius:4px; color:var(--text-1);">
+        <option value="">All</option>
+        {% for src in sources %}
+          <option value="{{ src }}" {{ 'selected' if filters.source == src else '' }}>{{ src }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="qa-btn">Filter</button>
+    <a href="{{ url_for('gui.signals') }}" class="qa-btn" style="color:var(--text-2);">Clear</a>
+  </form>
+</div>
+
+{# ── Table ── #}
+<div class="panel">
+  {% if rows %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Event Time</th>
+            <th>Source</th>
+            <th>Event Type</th>
+            <th>Severity</th>
+            <th>Message</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+          <tr>
+            <td class="muted" style="font-size:0.78rem;">{{ row.id }}</td>
+            <td style="font-size:0.82rem; white-space:nowrap;">{{ row.event_time[:16] if row.event_time else '—' }}</td>
+            <td style="font-size:0.82rem;">{{ row.source }}</td>
+            <td style="font-size:0.82rem;">{{ row.event_type }}</td>
+            <td>
+              <span class="badge-severity sev-{{ row.severity | lower }}">{{ row.severity }}</span>
+            </td>
+            <td style="font-size:0.82rem; max-width: 280px;">{{ row.message or '—' }}</td>
+            <td>
+              <span class="badge-status st-{{ row.status | lower }}">{{ row.status }}</span>
+            </td>
+            <td style="white-space:nowrap;">
+              {% if row.status == 'OPEN' %}
+                <form method="post" action="{{ url_for('gui.signals_resolve', signal_id=row.id) }}" style="display:inline;">
+                  <button type="submit" class="qa-btn" style="font-size:0.75rem; padding:0.2rem 0.5rem;">Resolve</button>
+                </form>
+                <form method="post" action="{{ url_for('gui.signals_ignore', signal_id=row.id) }}" style="display:inline;">
+                  <button type="submit" class="qa-btn" style="font-size:0.75rem; padding:0.2rem 0.5rem; color:var(--text-3);">Ignore</button>
+                </form>
+              {% else %}
+                <span class="muted" style="font-size:0.78rem;">{{ row.resolved_at[:10] if row.resolved_at else '—' }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="muted">No signals found. Use <a href="{{ url_for('gui.signals_add') }}">Add Signal</a> to register one manually.</p>
+  {% endif %}
+</div>
+
+{% endif %}
+
+
+{% endblock %}
