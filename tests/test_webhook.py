@@ -436,3 +436,40 @@ def test_unknown_event_type_maps_to_info_severity(wh_env):
     )
     sigs = _get_signals(wh_env["db_path"])
     assert sigs[0]["severity"] == "INFO"
+
+
+# ---------------------------------------------------------------------------
+# Regression — Post-B62B: GET /signals on DB without signal_alerts must not 500
+# ---------------------------------------------------------------------------
+
+def test_signals_route_no_signal_alerts_table_returns_200(tmp_path, monkeypatch):
+    """Reproduce the bug: a DB that exists but lacks signal_alerts (e.g. opened
+    before B62A or connected without init_schema) must cause GET /signals to
+    return 200 with an empty list, not 500 OperationalError."""
+    instance_path = tmp_path / "instance"
+    instance_path.mkdir()
+
+    # Create a bare DB file with no tables at all
+    db_path = tmp_path / "bare_no_signals.db"
+    bare = Database(str(db_path))
+    bare.connect()
+    # Intentionally skip init_schema() — signal_alerts does NOT exist
+    bare.close()
+
+    state = {"db_path": str(db_path), "mode": "TEST"}
+    (instance_path / "gui_state.json").write_text(
+        json.dumps(state), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("PORTFOLIO_WEBHOOK_TOKEN", _TOKEN)
+    monkeypatch.setenv("PORTFOLIO_DB_PATH", str(db_path))
+
+    app = create_app(instance_path=str(instance_path))
+    app.config.update({"TESTING": True})
+    client = app.test_client()
+
+    resp = client.get("/signals")
+    assert resp.status_code == 200
+    body = resp.data.decode("utf-8", errors="ignore")
+    # Page renders; no signal rows expected
+    assert "500" not in body

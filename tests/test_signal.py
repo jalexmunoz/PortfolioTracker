@@ -345,3 +345,45 @@ def test_update_signal_invalid_status(sig_svc):
 def test_update_signal_nonexistent_id(sig_svc):
     found = sig_svc.update_signal_status(99999, "RESOLVED")
     assert found is False
+
+
+# ---------------------------------------------------------------------------
+# Regression — Post-B62B: ensure schema before reads
+# ---------------------------------------------------------------------------
+
+def test_list_signals_no_schema_returns_empty(tmp_path):
+    """list_signals() on a DB opened with connect() only (no init_schema)
+    must return [] instead of raising OperationalError."""
+    db = Database(str(tmp_path / "bare.db"))
+    db.connect()
+    # Intentionally skip init_schema() to reproduce the bug scenario
+    svc = SignalService(db)
+    rows = svc.list_signals()
+    assert rows == []
+    db.close()
+
+
+def test_add_signal_no_schema_creates_and_inserts(tmp_path):
+    """add_signal() on a DB without signal_alerts must auto-create the table
+    and successfully insert the row."""
+    db = Database(str(tmp_path / "bare2.db"))
+    db.connect()
+    svc = SignalService(db)
+    sig_id = svc.add_signal(
+        event_time="2026-05-01T10:00:00",
+        source="tradingview_macro",
+        event_type="hard_risk_off_activated",
+        severity="HIGH",
+    )
+    assert isinstance(sig_id, int) and sig_id > 0
+    assert svc.count_open_signals() == 1
+    db.close()
+
+
+def test_count_open_no_schema_returns_zero(tmp_path):
+    """count_open_signals() on a DB without signal_alerts must return 0, not raise."""
+    db = Database(str(tmp_path / "bare3.db"))
+    db.connect()
+    svc = SignalService(db)
+    assert svc.count_open_signals() == 0
+    db.close()

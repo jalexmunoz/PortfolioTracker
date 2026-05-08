@@ -20,6 +20,10 @@ class SignalService:
     def __init__(self, db: Database) -> None:
         self._db = db
 
+    def _ensure_schema(self) -> None:
+        """Create signal_alerts table and indexes if missing. Safe to call repeatedly."""
+        self._db._ensure_signal_alerts_schema()
+
     # ------------------------------------------------------------------
     # Writes
     # ------------------------------------------------------------------
@@ -52,6 +56,7 @@ class SignalService:
         if not event_time or not event_time.strip():
             raise ValueError("event_time is required")
 
+        self._ensure_schema()
         conn = self._db.connect()
         cur = conn.execute(
             """
@@ -88,6 +93,7 @@ class SignalService:
         if new_status in ("RESOLVED", "IGNORED"):
             resolved_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
+        self._ensure_schema()
         conn = self._db.connect()
         cur = conn.execute(
             """
@@ -128,6 +134,7 @@ class SignalService:
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(max(1, int(limit)))
 
+        self._ensure_schema()
         conn = self._db.connect()
         rows = conn.execute(
             f"""
@@ -144,6 +151,7 @@ class SignalService:
         return [dict(r) for r in rows]
 
     def count_open_signals(self) -> int:
+        self._ensure_schema()
         conn = self._db.connect()
         row = conn.execute(
             "SELECT COUNT(*) FROM signal_alerts WHERE status = 'OPEN'"
