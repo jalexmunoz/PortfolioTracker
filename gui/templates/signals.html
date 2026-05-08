@@ -110,5 +110,18 @@
 
 {% endif %}
 
+{# ── B62B: Webhook hint (always shown, no token displayed) ── #}
+<div class="panel" style="margin-top: 1.2rem;">
+  <div class="panel-title" style="font-size:0.82rem;">TradingView Webhook</div>
+  <p class="muted" style="font-size:0.8rem; margin: 0.3rem 0 0.2rem 0;">
+    Endpoint: <code>POST /webhooks/tradingview/macro</code>
+    &nbsp;·&nbsp; Auth: <code>?token=YOUR_TOKEN</code> or header <code>X-Webhook-Token</code>
+    &nbsp;·&nbsp; Token set via env var <code>PORTFOLIO_WEBHOOK_TOKEN</code>
+  </p>
+  <p class="muted" style="font-size:0.78rem; margin: 0.2rem 0 0;">
+    Accepts <code>text/plain</code> (key=value per line) or <code>application/json</code>.
+    Required field: <code>event_type</code>.
+  </p>
+</div>
 
 {% endblock %}

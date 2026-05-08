@@ -1,10 +1,12 @@
 import csv as _csv_mod
+import hmac
 import io
+import json as _json_mod
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 
-from flask import Blueprint, current_app, flash, make_response, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, flash, jsonify, make_response, redirect, render_template, request, url_for
 
 from .backup import create_auto_backup, create_backup
 from .db_context import clear_active_db, load_active_db, set_active_db
@@ -2320,3 +2322,161 @@ def signals_ignore(signal_id: int):
         db.close()
 
     return redirect(url_for("gui.signals"))
+
+
+# ---------------------------------------------------------------------------
+# B62B — TradingView Webhook Receiver
+# ---------------------------------------------------------------------------
+
+_WEBHOOK_SEVERITY_MAP = {
+    "hard_risk_off_activated":      "HIGH",
+    "confirmed_downgrade":          "HIGH",
+    "risk_off":                     "HIGH",
+    "fast_early_warning_downgrade": "MEDIUM",
+    "caution":                      "MEDIUM",
+    "oversold":                     "MEDIUM",
+    "stretched":                    "MEDIUM",
+    "confirmed_upgrade":            "LOW",
+    "risk_on":                      "LOW",
+    "stress":                       "CRITICAL",
+    "no_trade_stress":              "CRITICAL",
+}
+
+
+def _webhook_check_token(req):
+    """
+    Returns (ok: bool, error: str).
+    Token must be set in env var PORTFOLIO_WEBHOOK_TOKEN.
+    Accepted via X-Webhook-Token header or ?token= query param.
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    expected = os.environ.get("PORTFOLIO_WEBHOOK_TOKEN", "").strip()
+    if not expected:
+        return False, "Webhook token not configured on server"
+
+    received = (
+        req.headers.get("X-Webhook-Token", "")
+        or req.args.get("token", "")
+    ).strip()
+
+    if not received:
+        return False, "Missing authentication token"
+
+    if not hmac.compare_digest(expected, received):
+        return False, "Invalid token"
+
+    return True, ""
+
+
+def _parse_webhook_payload(req) -> dict:
+    """
+    Parse incoming webhook payload.
+    Supports application/json and text/plain (key=value per line or comma-separated).
+    """
+    ct = (req.content_type or "").lower()
+    if "json" in ct:
+        data = req.get_json(force=True, silent=True)
+        return data if isinstance(data, dict) else {}
+
+    # text/plain — key=value pairs, newline or comma separated
+    text = (req.get_data(as_text=True) or "").strip()
+    if not text:
+        return {}
+
+    result = {}
+    for chunk in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        for part in chunk.split(","):
+            part = part.strip()
+            if "=" in part:
+                k, _, v = part.partition("=")
+                k, v = k.strip(), v.strip()
+                if k:
+                    result[k] = v
+    return result
+
+
+def _webhook_resolve_db_path():
+    """
+    Returns (db_path_str_or_None, error_str_or_None).
+    Checks PORTFOLIO_DB_PATH env var first, then falls back to active GUI DB.
+    """
+    env_path = os.environ.get("PORTFOLIO_DB_PATH", "").strip()
+    if env_path:
+        if not os.path.exists(env_path):
+            return None, f"PORTFOLIO_DB_PATH points to non-existent file: {env_path}"
+        return env_path, None
+
+    active = load_active_db()
+    if active is None:
+        return None, "No active database configured (set PORTFOLIO_DB_PATH or select DB in GUI)"
+    return active.db_path, None
+
+
+@bp.route("/webhooks/tradingview/macro", methods=["POST"])
+def webhook_tradingview_macro():
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    ok, err = _webhook_check_token(request)
+    if not ok:
+        status_code = 503 if "not configured" in err else 403
+        return jsonify({"ok": False, "error": err}), status_code
+
+    # ── Parse payload ─────────────────────────────────────────────────────────
+    payload = _parse_webhook_payload(request)
+
+    event_type = (payload.get("event_type") or "").strip()
+    if not event_type:
+        return jsonify({"ok": False, "error": "event_type is required"}), 400
+
+    # ── Resolve DB ────────────────────────────────────────────────────────────
+    db_path, db_err = _webhook_resolve_db_path()
+    if db_path is None:
+        return jsonify({"ok": False, "error": db_err}), 503
+
+    # ── Build signal fields ───────────────────────────────────────────────────
+    source = (payload.get("source") or "tradingview_macro").strip() or "tradingview_macro"
+    severity = _WEBHOOK_SEVERITY_MAP.get(event_type.lower(), "INFO")
+
+    raw_msg = (payload.get("message") or "").strip()
+    message = raw_msg or f"TradingView macro signal: {event_type}"
+
+    event_time = (payload.get("event_time") or payload.get("time") or "").strip()
+    if not event_time:
+        event_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    regime = (payload.get("regime") or None) or None
+    score = None
+    score_raw = payload.get("score")
+    if score_raw is not None:
+        try:
+            score = float(score_raw)
+        except (TypeError, ValueError):
+            score = None
+
+    symbol = (payload.get("symbol") or "MACRO").strip() or "MACRO"
+    asset_class = (payload.get("asset_class") or "macro").strip() or "macro"
+    payload_json = _json_mod.dumps(payload, ensure_ascii=False)
+
+    # ── Write signal — no backup (append-only, no financial impact) ───────────
+    try:
+        from portfolio_tracker_v2.core.database import Database
+        from portfolio_tracker_v2.services.signal_svc import SignalService
+
+        db = Database(db_path)
+        sig_svc = SignalService(db)
+        sig_id = sig_svc.add_signal(
+            event_time=event_time,
+            source=source,
+            event_type=event_type,
+            severity=severity,
+            message=message,
+            regime=regime,
+            score=score,
+            symbol=symbol,
+            asset_class=asset_class,
+            payload_json=payload_json,
+        )
+        db.close()
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Storage error: {exc}"}), 500
+
+    return jsonify({"ok": True, "signal_id": sig_id}), 201
