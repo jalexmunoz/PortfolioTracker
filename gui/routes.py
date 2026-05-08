@@ -208,6 +208,7 @@ _TRANSFER_FIELDS = (
     "source_account", "dest_account", "symbol", "tx_date",
     "quantity_sent", "fee_quantity", "notes",
 )
+_CORRECT_TRANSFER_FIELDS = ("transfer_in_tx_id", "new_destination", "notes")
 
 
 def _raw_payload(form, fields):
@@ -294,6 +295,65 @@ def _summary_transfer(parsed, preview=None):
     rows += [
         ("Cash impact", "None"),
         ("Realized PnL", "None"),
+        ("Notes", parsed["notes"] or "—"),
+    ]
+    return rows
+
+
+def _validate_correct_transfer_form(form):
+    """Parse + validate Correct Transfer Destination form. Returns dict or raises ValueError."""
+    tx_id_raw = form.get("transfer_in_tx_id", "").strip()
+    new_destination = form.get("new_destination", "").strip()
+    notes = form.get("notes", "").strip() or None
+
+    if not tx_id_raw:
+        raise ValueError("Transfer IN Transaction ID is required")
+    try:
+        transfer_in_tx_id = int(tx_id_raw)
+        if transfer_in_tx_id <= 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        raise ValueError("Transfer IN Transaction ID must be a positive integer")
+    if not new_destination:
+        raise ValueError("New Destination Account is required")
+
+    return {
+        "transfer_in_tx_id": transfer_in_tx_id,
+        "new_destination": new_destination,
+        "notes": notes,
+    }
+
+
+def _get_correct_transfer_preview(active, parsed):
+    """Read-only: fetch current TRANSFER_IN state for review screen."""
+    try:
+        db, _, tx_svc, _ = _get_db_and_services(active)
+        try:
+            return tx_svc.get_transfer_in_info(parsed["transfer_in_tx_id"])
+        finally:
+            db.close()
+    except Exception:
+        return None
+
+
+def _summary_correct_transfer(parsed, info=None):
+    rows = [
+        ("Transfer IN tx_id", str(parsed["transfer_in_tx_id"])),
+        ("New Destination", parsed["new_destination"]),
+    ]
+    if info:
+        rows += [
+            ("Source Account", info["source_account"]),
+            ("Current Destination", info["current_destination"]),
+            ("Symbol", info["symbol"]),
+            ("Quantity Received", _format_qty(info["quantity"])),
+            ("Cost Basis / Unit", f"{_format_money(info['unit_price'])} USD"),
+            ("SELLs from current dest", str(info["sell_count"])),
+            ("XFER_OUTs from current dest", str(info["transfer_out_count"])),
+        ]
+    rows += [
+        ("Cash impact", "None"),
+        ("Realized PnL impact", "None"),
         ("Notes", parsed["notes"] or "—"),
     ]
     return rows
@@ -1755,6 +1815,87 @@ def transfer_asset():
 
     return render_template(
         "transfer_asset.html",
+        active=active,
+        active_section="operations",
+        next_url=request.args.get("next_url", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# B61A — Correct Transfer Destination Account
+# ---------------------------------------------------------------------------
+
+@bp.route("/correct-transfer-destination", methods=["GET", "POST"])
+def correct_transfer_destination():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    if request.method == "POST":
+        confirmed = request.form.get("confirmed") == "1"
+        review_mode = request.form.get("review") == "1" and not confirmed
+
+        try:
+            parsed = _validate_correct_transfer_form(request.form)
+
+            if review_mode:
+                info = _get_correct_transfer_preview(active, parsed)
+                warning = None
+                if info and not info["is_safe"]:
+                    warning = (
+                        f"This TRANSFER_IN has {info['sell_count']} SELL(s) and "
+                        f"{info['transfer_out_count']} outgoing TRANSFER_OUT(s) that "
+                        f"depend on it. Correction will be blocked at write time."
+                    )
+                return render_template(
+                    "review_operation.html",
+                    active=active,
+                    active_section="operations",
+                    title="Review Correct Transfer Destination",
+                    summary=_summary_correct_transfer(parsed, info),
+                    raw_payload=_raw_payload(request.form, _CORRECT_TRANSFER_FIELDS),
+                    endpoint_url=url_for("gui.correct_transfer_destination"),
+                    next_url=request.form.get("next_url", ""),
+                    warning=warning,
+                )
+
+            backup_path, abort = _backup_before_write(
+                active, "correct_transfer_destination", "gui.correct_transfer_destination",
+            )
+            if abort is not None:
+                return abort
+
+            db, _, tx_svc, _ = _get_db_and_services(active)
+            from portfolio_tracker_v2.core.exceptions import InvalidTransaction
+            try:
+                result = tx_svc.correct_transfer_destination(
+                    transfer_in_tx_id=parsed["transfer_in_tx_id"],
+                    new_destination_account=parsed["new_destination"],
+                    notes=parsed["notes"],
+                )
+                if result.get("no_op"):
+                    flash(result["message"], "info")
+                else:
+                    flash(
+                        f"OK: TRANSFER_IN {result['transfer_in_tx_id']} "
+                        f"({result['symbol']}) destination corrected: "
+                        f"'{result['previous_destination']}' -> "
+                        f"'{result['new_destination']}'"
+                        f"{_backup_suffix(backup_path)}",
+                        "success",
+                    )
+            except InvalidTransaction as exc:
+                flash(f"Correction error: {exc}", "error")
+            finally:
+                db.close()
+
+        except ValueError as exc:
+            flash(str(exc), "error")
+
+        return _redirect_after_write("gui.correct_transfer_destination")
+
+    return render_template(
+        "correct_transfer_destination.html",
         active=active,
         active_section="operations",
         next_url=request.args.get("next_url", ""),

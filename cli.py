@@ -1162,6 +1162,57 @@ def cli_delete_transaction(tx_id):
     except Exception as exc:
         click.echo(f"ERROR: {exc}", err=True)
         raise click.exceptions.Exit(2)
+
+
+@main.command("correct-transfer-destination")
+@click.argument("transfer_in_tx_id", type=click.IntRange(min=1))
+@click.option("--new-destination", required=True, help="New destination account name")
+@click.option("--notes", default=None, help="Optional audit notes")
+@click.option(
+    "--dry-run", is_flag=True, default=False,
+    help="Show current transfer state without writing",
+)
+def cli_correct_transfer_destination(transfer_in_tx_id, new_destination, notes, dry_run):
+    """Correct the destination account of a TRANSFER_IN transaction (B61A).
+
+    Updates only the destination account. Quantity, symbol, cost basis and
+    the linked TRANSFER_OUT remain unchanged. Blocked if the lot has
+    subsequent SELLs or outgoing transfers.
+    """
+    db = ensure_db()
+    resolver = AssetResolver(db)
+    svc = TransactionService(db, resolver)
+    try:
+        if dry_run:
+            info = svc.get_transfer_in_info(transfer_in_tx_id)
+            click.echo(f"TRANSFER_IN tx_id:       {info['transfer_in_tx_id']}")
+            click.echo(f"Symbol:                  {info['symbol']}")
+            click.echo(f"Source account:          {info['source_account']}")
+            click.echo(f"Current destination:     {info['current_destination']}")
+            click.echo(f"New destination:         {new_destination}")
+            click.echo(f"Quantity received:       {info['quantity']}")
+            click.echo(f"SELLs consuming lot:     {info['sell_count']}")
+            click.echo(f"XFER_OUTs from lot:      {info['transfer_out_count']}")
+            click.echo(f"Safe to correct:         {'YES' if info['is_safe'] else 'NO — blocked'}")
+            return
+        result = svc.correct_transfer_destination(
+            transfer_in_tx_id=transfer_in_tx_id,
+            new_destination_account=new_destination,
+            notes=notes,
+        )
+        if result.get("no_op"):
+            click.echo(result["message"])
+        else:
+            click.echo(
+                f"OK: TRANSFER_IN {result['transfer_in_tx_id']} ({result['symbol']}) "
+                f"destination corrected: "
+                f"'{result['previous_destination']}' -> '{result['new_destination']}'"
+            )
+    except Exception as exc:
+        click.echo(f"ERROR: {exc}", err=True)
+        raise click.exceptions.Exit(2)
+
+
 @main.command("list-transactions")
 @click.option("--account", default=None)
 @click.option("--symbol", default=None)

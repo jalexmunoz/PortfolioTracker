@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block page_title %}Correct Transfer Destination{% endblock %}
+
+{% block content %}
+
+<div class="panel" style="max-width: 540px;">
+  <div class="panel-title">Correct Transfer Destination Account</div>
+  <p class="muted" style="margin-top: 0;">
+    Updates the destination account of an existing TRANSFER_IN (e.g. a typo fix).
+    Quantity, symbol, cost basis and the linked TRANSFER_OUT remain unchanged.
+    Blocked if the lot has been consumed by subsequent SELLs or outgoing transfers.
+  </p>
+  <form method="post">
+    <input type="hidden" name="next_url" value="{{ next_url }}">
+    <input type="hidden" name="review" value="1">
+
+    <label for="transfer_in_tx_id">Transfer IN Transaction ID</label>
+    <input type="number" id="transfer_in_tx_id" name="transfer_in_tx_id" required
+           min="1" placeholder="e.g. 42">
+
+    <label for="new_destination">New Destination Account</label>
+    <input type="text" id="new_destination" name="new_destination" required
+           placeholder="e.g. Trezor">
+
+    <label for="notes">Notes (optional)</label>
+    <input type="text" id="notes" name="notes" placeholder="e.g. typo fix">
+
+    <button type="submit">Continue / Review</button>
+    <a href="{{ url_for('gui.operations') }}" class="btn btn-secondary">Cancel</a>
+  </form>
+</div>
+
+{% endblock %}

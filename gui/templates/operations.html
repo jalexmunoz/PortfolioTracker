@@ -164,6 +164,13 @@
     <a href="{{ url_for('gui.transfer_asset') }}" class="btn {% if active is none %}disabled{% endif %}">Open Transfer Form</a>
   </div>
 
+  {# ---- Correct Transfer Destination ---- #}
+  <div class="hub-tile">
+    <h3>Correct Transfer Destination</h3>
+    <p>Fix a typo in the destination account of an existing TRANSFER_IN. No PnL, no cash impact. Blocked if the lot was already sold.</p>
+    <a href="{{ url_for('gui.correct_transfer_destination') }}" class="btn {% if active is none %}disabled{% endif %}">Open Correction Form</a>
+  </div>
+
 </div>
 
 <div class="panel panel-muted">

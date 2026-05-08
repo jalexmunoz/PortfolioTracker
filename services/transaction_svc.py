@@ -2,6 +2,7 @@
 Transaction service: record buys/sells with FIFO matching.
 """
 import json
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
@@ -1121,9 +1122,236 @@ class TransactionService:
                 conn.commit()
                 return {"id": tx_id, "tx_type": tx_type}
 
+            if tx_type in ("TRANSFER_IN", "TRANSFER_OUT"):
+                raise InvalidTransaction(
+                    f"Cannot delete transaction {tx_id} ({tx_type}): transfers must be "
+                    f"corrected or reverted as a whole. Use 'correct-transfer-destination' "
+                    f"or 'transfer-revert' (coming in B61C)."
+                )
             raise InvalidTransaction(
                 f"Cannot delete transaction {tx_id}: unsupported tx_type '{tx_type}'"
             )
+        except Exception:
+            conn.rollback()
+            raise
+
+    # ------------------------------------------------------------------
+    # B61A — Transfer destination correction
+    # ------------------------------------------------------------------
+
+    def _parse_transfer_in_ref_out(self, notes: str) -> int:
+        """Extract ref_out tx_id from TRANSFER_IN notes string."""
+        m = re.search(r'ref_out=(\d+)', notes or '')
+        if not m:
+            raise InvalidTransaction(
+                "TRANSFER_IN notes do not contain a ref_out field — transfer data may be corrupt"
+            )
+        return int(m.group(1))
+
+    def get_transfer_in_info(self, transfer_in_tx_id: int) -> dict:
+        """Read-only: fetch current state of a TRANSFER_IN for preview/review."""
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT t.id, t.tx_type, t.notes, t.quantity, t.unit_price, t.tx_date,
+                   a.symbol, acc.name
+            FROM transactions t
+            JOIN assets a   ON a.id   = t.asset_id
+            JOIN accounts acc ON acc.id = t.account_id
+            WHERE t.id = ?
+            """,
+            (transfer_in_tx_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise InvalidTransaction(f"Transaction {transfer_in_tx_id} does not exist")
+
+        _, tx_type, tx_notes, quantity, unit_price, tx_date, symbol, current_dest = row
+
+        if tx_type != "TRANSFER_IN":
+            raise InvalidTransaction(
+                f"Transaction {transfer_in_tx_id} is '{tx_type}', not TRANSFER_IN"
+            )
+
+        out_tx_id = self._parse_transfer_in_ref_out(tx_notes)
+
+        cursor.execute(
+            "SELECT t.id, acc.name FROM transactions t "
+            "JOIN accounts acc ON acc.id = t.account_id WHERE t.id = ?",
+            (out_tx_id,),
+        )
+        out_row = cursor.fetchone()
+        source_account = out_row[1] if out_row else "unknown"
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM lot_matches WHERE buy_tx_id = ?",
+            (transfer_in_tx_id,),
+        )
+        sell_count = int(cursor.fetchone()[0] or 0)
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM transfer_lot_matches WHERE buy_tx_id = ?",
+            (transfer_in_tx_id,),
+        )
+        transfer_out_count = int(cursor.fetchone()[0] or 0)
+
+        return {
+            "transfer_in_tx_id": transfer_in_tx_id,
+            "transfer_out_tx_id": out_tx_id,
+            "symbol": symbol,
+            "source_account": source_account,
+            "current_destination": current_dest,
+            "quantity": Decimal(str(quantity)),
+            "unit_price": Decimal(str(unit_price)) if unit_price is not None else Decimal("0"),
+            "tx_date": tx_date,
+            "sell_count": sell_count,
+            "transfer_out_count": transfer_out_count,
+            "is_safe": sell_count == 0 and transfer_out_count == 0,
+        }
+
+    def correct_transfer_destination(
+        self,
+        transfer_in_tx_id: int,
+        new_destination_account: str,
+        notes: Optional[str] = None,
+    ) -> dict:
+        """Correct the destination account of an existing TRANSFER_IN.
+
+        Updates only account_id and appends an audit trail to notes.
+        Blocked if any lot_matches or transfer_lot_matches reference this
+        TRANSFER_IN as a source lot, meaning subsequent activity already
+        depends on the wrong account.
+
+        Returns a dict with correction details, or {"no_op": True, ...} if
+        new_destination equals the current destination.
+        """
+        new_dest = (new_destination_account or "").strip()
+        if not new_dest:
+            raise InvalidTransaction("new_destination_account cannot be empty")
+
+        conn = self.db.connect()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT t.id, t.tx_type, t.notes, t.quantity, t.unit_price, t.tx_date,
+                       a.symbol, acc.name
+                FROM transactions t
+                JOIN assets a   ON a.id   = t.asset_id
+                JOIN accounts acc ON acc.id = t.account_id
+                WHERE t.id = ?
+                """,
+                (transfer_in_tx_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise InvalidTransaction(
+                    f"Transaction {transfer_in_tx_id} does not exist"
+                )
+
+            _, tx_type, tx_notes, quantity, unit_price, tx_date, symbol, current_dest = row
+
+            if tx_type != "TRANSFER_IN":
+                raise InvalidTransaction(
+                    f"Transaction {transfer_in_tx_id} is '{tx_type}', not TRANSFER_IN. "
+                    f"Use correct-transfer-destination only on TRANSFER_IN transactions."
+                )
+
+            out_tx_id = self._parse_transfer_in_ref_out(tx_notes)
+
+            cursor.execute(
+                "SELECT t.id, acc.name FROM transactions t "
+                "JOIN accounts acc ON acc.id = t.account_id WHERE t.id = ?",
+                (out_tx_id,),
+            )
+            out_row = cursor.fetchone()
+            if not out_row:
+                raise InvalidTransaction(
+                    f"Linked TRANSFER_OUT (id={out_tx_id}) does not exist — "
+                    f"transfer data may be corrupt"
+                )
+            source_account = out_row[1]
+
+            cursor.execute(
+                "SELECT id, name FROM accounts WHERE name = ? COLLATE NOCASE",
+                (new_dest,),
+            )
+            new_dest_row = cursor.fetchone()
+            if not new_dest_row:
+                raise InvalidTransaction(
+                    f"Account '{new_dest}' does not exist. "
+                    f"Create it first or check the spelling."
+                )
+            new_dest_id, new_dest_name = new_dest_row[0], new_dest_row[1]
+
+            if new_dest_name.lower() == current_dest.lower():
+                return {
+                    "no_op": True,
+                    "message": (
+                        f"TRANSFER_IN {transfer_in_tx_id} destination is already "
+                        f"'{current_dest}'. No change made."
+                    ),
+                    "transfer_in_tx_id": transfer_in_tx_id,
+                    "symbol": symbol,
+                    "source_account": source_account,
+                    "current_destination": current_dest,
+                    "new_destination": new_dest_name,
+                }
+
+            if new_dest_name.lower() == source_account.lower():
+                raise InvalidTransaction(
+                    f"new_destination_account cannot be the same as source account "
+                    f"'{source_account}'"
+                )
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM lot_matches WHERE buy_tx_id = ?",
+                (transfer_in_tx_id,),
+            )
+            sell_count = int(cursor.fetchone()[0] or 0)
+            if sell_count > 0:
+                raise InvalidTransaction(
+                    f"Cannot correct destination: TRANSFER_IN {transfer_in_tx_id} has been "
+                    f"consumed by {sell_count} SELL transaction(s) from '{current_dest}'. "
+                    f"Reverse those SELLs first."
+                )
+
+            cursor.execute(
+                "SELECT COUNT(*) FROM transfer_lot_matches WHERE buy_tx_id = ?",
+                (transfer_in_tx_id,),
+            )
+            transfer_out_count = int(cursor.fetchone()[0] or 0)
+            if transfer_out_count > 0:
+                raise InvalidTransaction(
+                    f"Cannot correct destination: TRANSFER_IN {transfer_in_tx_id} has been "
+                    f"consumed by {transfer_out_count} outgoing TRANSFER_OUT(s) from "
+                    f"'{current_dest}'. Reverse those transfers first."
+                )
+
+            audit = f"CORRECTED_DEST:{current_dest}->{new_dest_name}"
+            if notes:
+                audit += f" ({notes})"
+            updated_notes = f"{tx_notes} | {audit}" if tx_notes else audit
+
+            cursor.execute(
+                "UPDATE transactions SET account_id = ?, notes = ? WHERE id = ?",
+                (new_dest_id, updated_notes, transfer_in_tx_id),
+            )
+            conn.commit()
+
+            return {
+                "no_op": False,
+                "transfer_in_tx_id": transfer_in_tx_id,
+                "transfer_out_tx_id": out_tx_id,
+                "symbol": symbol,
+                "source_account": source_account,
+                "previous_destination": current_dest,
+                "new_destination": new_dest_name,
+                "quantity": Decimal(str(quantity)),
+                "unit_price": Decimal(str(unit_price)) if unit_price is not None else Decimal("0"),
+                "tx_date": tx_date,
+            }
         except Exception:
             conn.rollback()
             raise
