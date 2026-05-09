@@ -2385,6 +2385,20 @@ _WEBHOOK_SEVERITY_MAP = {
     "no_trade_stress":              "CRITICAL",
 }
 
+# B63B — event types that trigger auto-evaluation of portfolio alert rules.
+# webhook_test, custom, unknown types, and source=portfolio_rule are excluded.
+_WEBHOOK_AUTO_EVAL_EVENTS = frozenset({
+    "hard_risk_off_activated",
+    "confirmed_downgrade",
+    "fast_early_warning_downgrade",
+    "risk_off",
+    "stress",
+    "caution",
+    "oversold",
+    "stretched",
+    "confirmed_upgrade",
+})
+
 
 def _webhook_check_token(req):
     """
@@ -2518,8 +2532,42 @@ def webhook_tradingview_macro():
             asset_class=asset_class,
             payload_json=payload_json,
         )
-        db.close()
     except Exception as exc:
         return jsonify({"ok": False, "error": f"Storage error: {exc}"}), 500
 
-    return jsonify({"ok": True, "signal_id": sig_id}), 201
+    # ── B63B — Auto-evaluate portfolio alerts for macro-relevant events ────────
+    should_evaluate = (
+        event_type.lower() in _WEBHOOK_AUTO_EVAL_EVENTS
+        and source != "portfolio_rule"
+    )
+    pa_created = 0
+    pa_skipped = 0
+    pa_error = None
+
+    if should_evaluate:
+        try:
+            from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+            from portfolio_tracker_v2.services.portfolio_alert_rule_svc import PortfolioAlertRuleService
+
+            result = PortfolioAlertRuleService(db, AssetResolver(db)).evaluate_portfolio_alerts()
+            pa_created = result["created"]
+            pa_skipped = result["skipped"]
+        except Exception as exc:
+            pa_error = str(exc)
+
+    try:
+        db.close()
+    except Exception:
+        pass
+
+    resp = {
+        "ok": True,
+        "signal_id": sig_id,
+        "portfolio_alerts_evaluated": should_evaluate,
+        "portfolio_alerts_created": pa_created,
+        "portfolio_alerts_skipped": pa_skipped,
+    }
+    if pa_error is not None:
+        resp["portfolio_alerts_error"] = pa_error
+
+    return jsonify(resp), 201
