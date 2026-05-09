@@ -2325,6 +2325,49 @@ def signals_ignore(signal_id: int):
 
 
 # ---------------------------------------------------------------------------
+# B63A — Portfolio-aware alert rules
+# ---------------------------------------------------------------------------
+
+def _get_rule_svc(active):
+    """Instantiate PortfolioAlertRuleService from active DB context."""
+    from portfolio_tracker_v2.core import Database
+    from portfolio_tracker_v2.core.asset_resolver import AssetResolver
+    from portfolio_tracker_v2.services.portfolio_alert_rule_svc import PortfolioAlertRuleService
+    db = Database(active.db_path)
+    resolver = AssetResolver(db)
+    return db, PortfolioAlertRuleService(db, resolver)
+
+
+@bp.route("/signals/evaluate-portfolio", methods=["POST"])
+def signals_evaluate_portfolio():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    backup_path, abort = _backup_before_write(
+        active, "evaluate_portfolio_alerts", "gui.signals"
+    )
+    if abort is not None:
+        return abort
+
+    db, rule_svc = _get_rule_svc(active)
+    try:
+        result = rule_svc.evaluate_portfolio_alerts()
+        flash(
+            f"Portfolio alerts evaluated: {result['created']} created, "
+            f"{result['skipped']} skipped duplicates"
+            f"{_backup_suffix(backup_path)}.",
+            "success",
+        )
+    except Exception as exc:
+        flash(f"Error evaluating portfolio alerts: {exc}", "error")
+    finally:
+        db.close()
+
+    return redirect(url_for("gui.signals"))
+
+
+# ---------------------------------------------------------------------------
 # B62B — TradingView Webhook Receiver
 # ---------------------------------------------------------------------------
 

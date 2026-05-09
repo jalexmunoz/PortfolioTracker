@@ -16,6 +16,11 @@
   <div class="panel-title-row">
     <span class="panel-title">Signal / Alert Log</span>
     <a href="{{ url_for('gui.signals_add') }}" class="qa-btn qa-primary">+ Add Signal</a>
+    {% if active %}
+    <form method="post" action="{{ url_for('gui.signals_evaluate_portfolio') }}" style="display:inline; margin-left:0.5rem;">
+      <button type="submit" class="qa-btn" title="Evaluate portfolio rules against open macro signals">Evaluate Portfolio Alerts</button>
+    </form>
+    {% endif %}
   </div>
   <p class="muted" style="margin-top: 0.4rem;">Informational log of market regime signals and manual alerts. Does not affect positions, cash, or PnL.</p>
 </div>
