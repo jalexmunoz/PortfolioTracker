@@ -186,6 +186,7 @@ class Database:
             self._ensure_historical_pnl_schema()
             self._ensure_transfer_schema()
             self._ensure_signal_alerts_schema()
+            self._ensure_signal_notifications_schema()
             self.commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Schema initialization failed: {e}")
@@ -283,5 +284,27 @@ class Database:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sa_source   ON signal_alerts(source, event_time DESC)"
+        )
+        conn.commit()
+
+    def _ensure_signal_notifications_schema(self) -> None:
+        """Create signal_notifications table for B63C dedup. Safe migration for existing DBs."""
+        conn = self.connect()
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS signal_notifications (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id  INTEGER NOT NULL,
+                channel    TEXT NOT NULL DEFAULT 'telegram',
+                status     TEXT NOT NULL DEFAULT 'sent',
+                sent_at    TEXT,
+                error      TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now')),
+                UNIQUE(signal_id, channel)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sn_signal ON signal_notifications(signal_id)"
         )
         conn.commit()

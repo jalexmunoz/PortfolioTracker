@@ -2155,6 +2155,12 @@ def _validate_signal_form(form):
 @bp.get("/signals")
 def signals():
     active = load_active_db()
+    try:
+        from portfolio_tracker_v2.services.telegram_notify_svc import is_enabled as _tg_enabled
+        _telegram_enabled = _tg_enabled()
+    except Exception:
+        _telegram_enabled = False
+
     if active is None:
         return render_template(
             "signals.html",
@@ -2165,6 +2171,7 @@ def signals():
             sources=_SIGNAL_SOURCES,
             severities=_SIGNAL_SEVERITIES,
             statuses=_SIGNAL_STATUSES,
+            telegram_enabled=_telegram_enabled,
         )
 
     status_f = request.args.get("status", "").strip().upper() or None
@@ -2187,6 +2194,7 @@ def signals():
         severities=_SIGNAL_SEVERITIES,
         statuses=_SIGNAL_STATUSES,
         event_types=_SIGNAL_EVENT_TYPES,
+        telegram_enabled=_telegram_enabled,
     )
 
 
@@ -2368,6 +2376,46 @@ def signals_evaluate_portfolio():
 
 
 # ---------------------------------------------------------------------------
+# B63C — Telegram test route
+# ---------------------------------------------------------------------------
+
+@bp.route("/signals/test-telegram", methods=["POST"])
+def signals_test_telegram():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    try:
+        from portfolio_tracker_v2.services.telegram_notify_svc import (
+            is_enabled,
+            send_message,
+        )
+    except ImportError:
+        flash("Telegram notification service not available.", "error")
+        return redirect(url_for("gui.signals"))
+
+    if not is_enabled():
+        flash(
+            "Telegram notifications are disabled. "
+            "Set PORTFOLIO_TELEGRAM_ENABLED=1, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID.",
+            "error",
+        )
+        return redirect(url_for("gui.signals"))
+
+    result = send_message(
+        "PortfolioTracker Test\n"
+        "Telegram notifications are working.\n\n"
+        "This is a test message. No portfolio changes were made."
+    )
+    if result["ok"]:
+        flash("Telegram test message sent.", "success")
+    else:
+        flash(f"Telegram test failed: {result.get('error', 'unknown error')}", "error")
+
+    return redirect(url_for("gui.signals"))
+
+
+# ---------------------------------------------------------------------------
 # B62B — TradingView Webhook Receiver
 # ---------------------------------------------------------------------------
 
@@ -2398,6 +2446,10 @@ _WEBHOOK_AUTO_EVAL_EVENTS = frozenset({
     "stretched",
     "confirmed_upgrade",
 })
+
+# B63C — event types excluded from Telegram notifications.
+# confirmed_upgrade omitted until decided otherwise; risk_on not in eval list but explicit here.
+_TELEGRAM_SKIP_EVENTS = frozenset({"confirmed_upgrade", "risk_on"})
 
 
 def _webhook_check_token(req):
@@ -2554,6 +2606,31 @@ def webhook_tradingview_macro():
             pa_skipped = result["skipped"]
         except Exception as exc:
             pa_error = str(exc)
+
+    # ── B63C — Telegram notification (after portfolio eval, no financial impact) ─
+    if should_evaluate and pa_created > 0 and event_type.lower() not in _TELEGRAM_SKIP_EVENTS:
+        try:
+            from portfolio_tracker_v2.services.telegram_notify_svc import (
+                TelegramNotifyService,
+                is_enabled as tg_is_enabled,
+            )
+            if tg_is_enabled():
+                new_alerts = [
+                    dict(r) for r in db.connect().execute(
+                        "SELECT message, event_type FROM signal_alerts"
+                        " WHERE source = 'portfolio_rule' AND status = 'OPEN'"
+                        " ORDER BY id DESC LIMIT ?",
+                        (pa_created,),
+                    ).fetchall()
+                ]
+                TelegramNotifyService(db).send_signal_summary(
+                    signal_id=sig_id,
+                    event_type=event_type,
+                    severity=severity,
+                    created_alerts=new_alerts,
+                )
+        except Exception:
+            pass  # Telegram failure must never break the webhook response
 
     try:
         db.close()

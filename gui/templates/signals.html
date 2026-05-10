@@ -129,4 +129,25 @@
   </p>
 </div>
 
+{# ── B63C: Telegram Notifications ── #}
+<div class="panel" style="margin-top: 1.2rem;">
+  <div class="panel-title" style="font-size:0.82rem;">Telegram Notifications</div>
+  <p class="muted" style="font-size:0.8rem; margin: 0.3rem 0 0.2rem 0;">
+    Status: <strong>{{ 'enabled' if telegram_enabled else 'disabled' }}</strong>
+    &nbsp;·&nbsp; Configure via:
+    <code>PORTFOLIO_TELEGRAM_ENABLED=1</code>,
+    <code>TELEGRAM_BOT_TOKEN</code>,
+    <code>TELEGRAM_CHAT_ID</code>
+  </p>
+  <p class="muted" style="font-size:0.78rem; margin: 0.2rem 0 0.5rem 0;">
+    Sends a summary to your Telegram chat when portfolio alerts are created by a macro webhook.
+    Token is never shown here or in logs.
+  </p>
+  {% if active and telegram_enabled %}
+  <form method="post" action="{{ url_for('gui.signals_test_telegram') }}">
+    <button type="submit" class="qa-btn">Send Telegram Test</button>
+  </form>
+  {% endif %}
+</div>
+
 {% endblock %}
