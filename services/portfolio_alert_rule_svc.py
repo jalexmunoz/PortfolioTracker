@@ -32,6 +32,12 @@ _ANTI_BUY_EVENTS = frozenset({"stress", "hard_risk_off_activated"})
 _SOURCE = "portfolio_rule"
 _TOP_LOSERS_CAP = 3
 
+# B63D — Take-profit review thresholds.
+# _TP_MIN_GAIN_USD suppresses noise from tiny positions (e.g. +30% on a $10 lot).
+_TP_GAIN_PCT = 30.0
+_TP_HIGH_PCT = 50.0
+_TP_MIN_GAIN_USD = Decimal("100")
+
 
 class PortfolioAlertRuleService:
     """Evaluates B63A portfolio-aware alert rules against open macro signals."""
@@ -127,6 +133,46 @@ class PortfolioAlertRuleService:
                             "total_equity": str(total_equity),
                         },
                     )
+
+        # ── Rule 6 (B63D) — Take-profit review (no macro signal required) ──
+        for p in positions:
+            if p.get("valuation_method") != "market_live":
+                continue
+            if p.get("valuation_status") != "usable":
+                continue
+            upct = p.get("unrealized_pct")
+            if upct is None:
+                continue
+            gain_f = float(upct)
+            if gain_f < _TP_GAIN_PCT:
+                continue
+            approved = p.get("approved_value") or Decimal("0")
+            cost = p.get("cost_basis") or Decimal("0")
+            if cost <= 0 or (approved - cost) < _TP_MIN_GAIN_USD:
+                continue
+            sym = p["symbol"]
+            sev = "HIGH" if gain_f >= _TP_HIGH_PCT else "MEDIUM"
+            asset_cls = self._pnl_svc._classify_asset_class(
+                p.get("asset_type", ""), sym, p["valuation_method"]
+            )
+            _emit(
+                event_type="take_profit_review_gain_threshold",
+                severity=sev,
+                message=(
+                    f"{sym} is up {gain_f:.1f}%. "
+                    "Review partial profit taking, trailing stop, or hold thesis."
+                ),
+                symbol=sym,
+                asset_class=asset_cls,
+                payload={
+                    "rule": 6,
+                    "symbol": sym,
+                    "unrealized_pct": round(gain_f, 2),
+                    "unrealized_gain_usd": str(approved - cost),
+                    "approved_value": str(approved),
+                    "cost_basis": str(cost),
+                },
+            )
 
         # ── Guard: Rules 1–4 require an active macro signal ───────────────
         active_risk_off = open_events & _RISK_OFF_ALL
