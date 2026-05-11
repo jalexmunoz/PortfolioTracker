@@ -150,4 +150,29 @@
   {% endif %}
 </div>
 
+{# ── B64B: Signal Maintenance ── #}
+{% if active %}
+<div class="panel" style="margin-top: 1.2rem;">
+  <div class="panel-title" style="font-size:0.82rem;">Signal Maintenance</div>
+  <p class="muted" style="font-size:0.8rem; margin: 0.3rem 0 0.6rem 0;">
+    Permanently delete non-OPEN signals to keep the log tidy. OPEN signals are never touched.
+    A backup is created before each purge.
+  </p>
+  <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+    <form method="post" action="{{ url_for('gui.signals_purge') }}">
+      <input type="hidden" name="purge_mode" value="ignored">
+      <button type="submit" class="qa-btn" style="color:var(--text-3);">Purge Ignored</button>
+    </form>
+    <form method="post" action="{{ url_for('gui.signals_purge') }}">
+      <input type="hidden" name="purge_mode" value="resolved">
+      <button type="submit" class="qa-btn" style="color:var(--text-3);">Purge Resolved</button>
+    </form>
+    <form method="post" action="{{ url_for('gui.signals_purge') }}">
+      <input type="hidden" name="purge_mode" value="test">
+      <button type="submit" class="qa-btn" style="color:var(--text-3);">Purge Test Signals</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 {% endblock %}

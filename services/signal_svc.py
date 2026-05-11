@@ -160,3 +160,50 @@ class SignalService:
 
     def recent_open_signals(self, limit: int = 5) -> list[dict]:
         return self.list_signals(status="OPEN", limit=limit)
+
+    # ------------------------------------------------------------------
+    # B64B — Purge (non-OPEN only; cascade-deletes signal_notifications)
+    # ------------------------------------------------------------------
+
+    def purge_by_status(self, status: str) -> int:
+        """Delete all signals with the given status (RESOLVED or IGNORED).
+
+        Cascades to signal_notifications. OPEN is forbidden.
+        Returns the number of signal_alerts rows deleted.
+        """
+        status = (status or "").strip().upper()
+        if status == "OPEN":
+            raise ValueError("OPEN signals cannot be purged.")
+        if status not in VALID_STATUSES:
+            raise ValueError(f"Invalid status: {status!r}")
+        self._ensure_schema()
+        conn = self._db.connect()
+        conn.execute(
+            "DELETE FROM signal_notifications WHERE signal_id IN "
+            "(SELECT id FROM signal_alerts WHERE status = ?)",
+            (status,),
+        )
+        cur = conn.execute("DELETE FROM signal_alerts WHERE status = ?", (status,))
+        self._db.commit()
+        return cur.rowcount
+
+    def purge_test_signals(self) -> int:
+        """Delete non-OPEN signals whose event_type is 'webhook_test' or whose
+        message contains the word 'test' (case-insensitive).
+
+        Cascades to signal_notifications.
+        Returns the number of signal_alerts rows deleted.
+        """
+        self._ensure_schema()
+        conn = self._db.connect()
+        conn.execute(
+            "DELETE FROM signal_notifications WHERE signal_id IN "
+            "(SELECT id FROM signal_alerts WHERE status != 'OPEN' "
+            " AND (LOWER(event_type) = 'webhook_test' OR LOWER(message) LIKE '%test%'))",
+        )
+        cur = conn.execute(
+            "DELETE FROM signal_alerts WHERE status != 'OPEN' "
+            "AND (LOWER(event_type) = 'webhook_test' OR LOWER(message) LIKE '%test%')",
+        )
+        self._db.commit()
+        return cur.rowcount

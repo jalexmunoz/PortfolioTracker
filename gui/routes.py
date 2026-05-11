@@ -2446,6 +2446,83 @@ def signals_test_telegram():
 
 
 # ---------------------------------------------------------------------------
+# B64B — Signal log maintenance (Purge Ignored / Resolved / Test)
+# ---------------------------------------------------------------------------
+
+_PURGE_MODES = {
+    "ignored": {
+        "title": "Purge Ignored Signals",
+        "effect": "All IGNORED signals and their notifications will be permanently deleted.",
+    },
+    "resolved": {
+        "title": "Purge Resolved Signals",
+        "effect": "All RESOLVED signals and their notifications will be permanently deleted.",
+    },
+    "test": {
+        "title": "Purge Test Signals",
+        "effect": (
+            "All non-OPEN test signals (event_type='webhook_test' or "
+            "message contains 'test') and their notifications will be permanently deleted."
+        ),
+    },
+}
+
+
+@bp.route("/signals/purge", methods=["POST"])
+def signals_purge():
+    active = _require_active_db()
+    if active is None:
+        return redirect(url_for("gui.setup"))
+
+    purge_mode = request.form.get("purge_mode", "").strip().lower()
+    if purge_mode not in _PURGE_MODES:
+        flash("Invalid purge mode.", "error")
+        return redirect(url_for("gui.signals"))
+
+    confirmed = request.form.get("confirmed") == "1"
+    meta = _PURGE_MODES[purge_mode]
+
+    if not confirmed:
+        return render_template(
+            "review_operation.html",
+            active=active,
+            active_section="signals",
+            title=meta["title"],
+            summary=[
+                ("Operation", meta["title"]),
+                ("OPEN signals", "Never touched — only non-OPEN signals are deleted."),
+            ],
+            raw_payload={"purge_mode": purge_mode},
+            endpoint_url=url_for("gui.signals_purge"),
+            next_url=url_for("gui.signals"),
+            warning=meta["effect"],
+        )
+
+    backup_path, abort = _backup_before_write(
+        active, f"purge_{purge_mode}_signals", "gui.signals"
+    )
+    if abort is not None:
+        return abort
+
+    db, sig_svc = _get_signal_svc(active)
+    try:
+        if purge_mode == "test":
+            deleted = sig_svc.purge_test_signals()
+        else:
+            deleted = sig_svc.purge_by_status(purge_mode.upper())
+        flash(
+            f"Purged {deleted} signal(s){_backup_suffix(backup_path)}.",
+            "success",
+        )
+    except Exception as exc:
+        flash(f"Purge failed: {exc}", "error")
+    finally:
+        db.close()
+
+    return redirect(url_for("gui.signals"))
+
+
+# ---------------------------------------------------------------------------
 # B62B — TradingView Webhook Receiver
 # ---------------------------------------------------------------------------
 
