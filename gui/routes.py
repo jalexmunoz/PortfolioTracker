@@ -1573,6 +1573,21 @@ def add_cash_movement():
     )
 
 
+def _safe_evaluate_portfolio_alerts(db, trigger_source: str = "refresh-prices"):
+    """B64A: evaluate portfolio alerts; return result dict or None on failure."""
+    try:
+        from portfolio_tracker_v2.services.portfolio_alert_notify_svc import (
+            evaluate_and_notify_portfolio_alerts,
+        )
+        return evaluate_and_notify_portfolio_alerts(db, trigger_source)
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Portfolio alert evaluation failed after price refresh: %s", exc
+        )
+        return None
+
+
 @bp.post("/refresh-prices")
 def refresh_prices_route():
     active = _require_active_db()
@@ -1587,13 +1602,15 @@ def refresh_prices_route():
 
     try:
         from portfolio_tracker_v2.services.price_svc import refresh_prices
+        from portfolio_tracker_v2.core import Database
 
         db = None
+        pa_result = None
         try:
-            from portfolio_tracker_v2.core import Database
-
             db = Database(active.db_path)
             report = refresh_prices(db)
+            # B64A: evaluate portfolio alerts while db is still open
+            pa_result = _safe_evaluate_portfolio_alerts(db)
         finally:
             if db is not None:
                 db.close()
@@ -1607,6 +1624,19 @@ def refresh_prices_route():
             f"{_backup_suffix(backup_path)}",
             "success" if report.failed_final == 0 else "warning",
         )
+        # B64A: flash portfolio alert evaluation result
+        if pa_result is not None:
+            pa_msg = (
+                f"Portfolio alerts evaluated: {pa_result['created']} created, "
+                f"{pa_result['skipped']} skipped duplicates."
+            )
+            if pa_result["telegram_sent"]:
+                pa_msg += " Telegram notification sent."
+            flash(pa_msg, "info")
+            if pa_result.get("telegram_error"):
+                flash("Telegram notification failed; alerts were still created.", "warning")
+        else:
+            flash("Warning: portfolio alert evaluation failed after price refresh.", "warning")
     except Exception as exc:
         flash(f"Refresh failed: {exc}", "error")
 

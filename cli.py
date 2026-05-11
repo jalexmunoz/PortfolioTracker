@@ -539,6 +539,25 @@ def _render_snapshot_alerts(
     return alerts
 
 
+def _evaluate_and_notify_after_refresh(db: Database, trigger_source: str = "refresh-prices") -> None:
+    """B64A: evaluate portfolio alerts after price refresh. Prints result; never raises."""
+    try:
+        from portfolio_tracker_v2.services.portfolio_alert_notify_svc import (
+            evaluate_and_notify_portfolio_alerts,
+        )
+        result = evaluate_and_notify_portfolio_alerts(db, trigger_source)
+        click.echo(
+            f"Portfolio alerts evaluated: {result['created']} created, "
+            f"{result['skipped']} skipped duplicates."
+        )
+        if result["telegram_sent"]:
+            click.echo("Telegram notification: sent")
+        elif result["telegram_error"]:
+            click.echo(f"Telegram notification: failed ({result['telegram_error']})", err=True)
+    except Exception as exc:
+        click.echo(f"Warning: portfolio alert evaluation failed: {exc}", err=True)
+
+
 def _render_refresh_report(db: Database, report: RefreshReport, verbose: bool) -> None:
     if verbose and report.results:
         cursor = db.connect().cursor()
@@ -1855,4 +1874,5 @@ def cli_refresh_prices(verbose):
     db = ensure_db()
     report = refresh_prices(db)
     _render_refresh_report(db, report, verbose)
+    _evaluate_and_notify_after_refresh(db)
 
